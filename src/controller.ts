@@ -6,7 +6,28 @@ export function parseFrequency(draft: string): number | null {
 }
 export const validFrequency = (value: number) => Number.isFinite(value) && value >= 0.1 && value <= 999 && Math.abs(value * 10 - Math.round(value * 10)) < 1e-9;
 type TorchConstraint = MediaTrackConstraintSet & { torch: boolean };
+export interface TorchDiagnostics {
+ targetHz: number; sampleCount: number; retainedSamples: number;
+ commandMeanMs: number; commandP95Ms: number; commandMaxMs: number;
+ latenessMeanMs: number; latenessMaxMs: number; skippedEdges: number;
+ observedTooSlow: boolean; active: boolean;
+}
 export class StrobeController {
+ private samples: number[] = [];
+ private sampleCount = 0; private commandTotal = 0; private commandMax = 0;
+ private lateTotal = 0; private lateMax = 0; private skipped = 0; private observations = 0;
+ private origin = 0; private nextEdge = 0; private lastState = false;
+ getDiagnostics(): TorchDiagnostics {
+   const sorted = [...this.samples].sort((a,b)=>a-b);
+   return { targetHz: this.frequency, sampleCount: this.sampleCount, retainedSamples: sorted.length,
+     commandMeanMs: this.sampleCount ? this.commandTotal/this.sampleCount : 0,
+     commandP95Ms: sorted[Math.max(0,Math.ceil(sorted.length*.95)-1)] ?? 0, commandMaxMs: this.commandMax,
+     latenessMeanMs: this.observations ? this.lateTotal/this.observations : 0,
+     latenessMaxMs: this.lateMax, skippedEdges: this.skipped,
+     observedTooSlow: this.observations >= 3 && (this.skipped > 0 || this.lateMax > 500/this.frequency),
+     active: this.active && this.mode === "torch" };
+ }
+
   private generation = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private track?: MediaStreamTrack;
@@ -92,7 +113,12 @@ export class StrobeController {
       if (token !== this.generation) return false;
       this.active = true;
       if (mode === "screen") this.screenFrames(token);
-      else void this.tick(token, true);
+      else {
+ this.samples=[]; this.sampleCount=this.commandTotal=this.commandMax=0;
+ this.lateTotal=this.lateMax=this.skipped=this.observations=0;
+ this.origin=performance.now(); this.nextEdge=0; this.lastState=false;
+ void this.tick(token);
+ }
       return true;
     } catch (e) {
       if (token === this.generation) {
@@ -131,21 +157,34 @@ export class StrobeController {
     };
     this.frame = requestAnimationFrame(frame);
   }
-  private async tick(token: number, on: boolean) {
-    if (!this.active || token !== this.generation) return;
-    const began = performance.now();
+  // Absolute monotonic grid; missed edges are never replayed.
+  private async tick(token: number) {
+    if (!this.active || token !== this.generation || !this.track) return;
+    const half = 500 / this.frequency, began = performance.now();
+    const late = Math.max(0, began - this.origin - this.nextEdge * half);
+    const latest = Math.max(this.nextEdge, Math.floor((began-this.origin)/half));
+    this.skipped += latest-this.nextEdge; this.nextEdge=latest;
+    const on = latest % 2 === 0;
+    this.lateTotal+=late; this.lateMax=Math.max(this.lateMax,late); this.observations++;
     try {
-      if (this.mode === "torch" && this.track) await this.write(this.track, on);
-      else this.light(on);
+      if (on !== this.lastState) {
+        await this.write(this.track,on);
+        if (!this.active || token !== this.generation) return;
+        const duration=performance.now()-began;
+        this.sampleCount++; this.commandTotal+=duration; this.commandMax=Math.max(this.commandMax,duration);
+        if (this.samples.length===256) this.samples.shift();
+        this.samples.push(duration); this.lastState=on;
+      }
       if (!this.active || token !== this.generation) return;
-      // Never catch up missed pulses; hardware writes are strictly serialized.
-      const delay = Math.max(
-        16, // Bounded writes; never busy-loop or catch up missed edges.
-        500 / this.frequency - (performance.now() - began),
-      );
-      this.timer = setTimeout(() => void this.tick(token, !on), delay);
+      // Select a future edge with opposite parity: no permanently-on aliasing,
+      // redundant commands, catch-up bursts, or more than 63 requests/second.
+      const earliest=performance.now()+16;
+      let edge=Math.max(this.nextEdge+1,Math.ceil((earliest-this.origin)/half));
+      if ((edge%2===0)===this.lastState) edge++;
+      this.skipped+=edge-this.nextEdge-1; this.nextEdge=edge;
+      this.timer=setTimeout(()=>void this.tick(token),Math.max(16,this.origin+edge*half-performance.now()));
     } catch {
-      if (token === this.generation) {
+      if (token===this.generation) {
         await this.stop();
         this.error("手电筒控制失败，已停止。请降低频率或改用屏幕模式。");
       }

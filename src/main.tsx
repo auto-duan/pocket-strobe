@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { parseFrequency, StrobeController, type Mode } from "./controller";
+import { parseFrequency, StrobeController, type Mode, type TorchDiagnostics } from "./controller";
 import "./style.css";
 function App() {
   const [mode, setMode] = useState<Mode>("screen"),
@@ -12,6 +12,7 @@ function App() {
     [full, setFull] = useState(false),
     [awake, setAwake] = useState(true),
     [note, setNote] = useState("");
+  const [diagnostics, setDiagnostics] = useState<TorchDiagnostics | null>(null);
   const invalidStart = useRef(false);
   const frequencyInput = useRef<HTMLInputElement>(null);
   const hz = parseFrequency(draft);
@@ -50,6 +51,7 @@ function App() {
   };
   useEffect(() => {
     mounted.current = true;
+    const report = setInterval(() => { const d = controller.current!.getDiagnostics(); if (d.sampleCount || d.active) setDiagnostics(d); }, 1000);
     const hide = () => {
       if (document.hidden) stop();
     };
@@ -60,6 +62,7 @@ function App() {
     window.addEventListener("pagehide", stop);
     window.addEventListener("keydown", key);
     return () => {
+      clearInterval(report);
       mounted.current = false;
       ++epoch.current;
       void controller.current!.stop();
@@ -74,6 +77,7 @@ function App() {
     const value = validate();
     if (invalidStart.current || value === null) { invalidStart.current = false; return; }
     const token = ++epoch.current;
+    if (mode === "torch") setDiagnostics(null);
     setBusy(true);
     setError("");
     setNote("");
@@ -129,6 +133,21 @@ function App() {
         <p className="mt-4 text-[11px] leading-relaxed text-[#95a58a]">目标频率，实际受屏幕刷新率与硬件限制。{mode === "torch" && "手电筒需相机权限，部分浏览器不支持。"}</p>
         <p className="mt-3 text-[11px] leading-relaxed text-[#b9aa94]">闪光可能引发光敏性癫痫或不适；有相关病史请勿使用，不适立即停止。</p>
         {typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches && <p className="mt-2 text-[11px] text-[#b9aa94]">系统已开启减少动态效果，建议不要启动频闪。</p>}
+        {mode === "torch" && <details data-testid="torch-diagnostics" className="mt-4 rounded-xl border border-[#344032] p-3 text-xs text-[#aebda4]">
+          <summary className="cursor-pointer">本机手电筒诊断</summary>
+          <p className="mt-3">仅记录 API 命令耗时，不是实测 LED 闪烁频率。数据仅在本机内存，不上传。</p>
+          {diagnostics ? <>
+            <p className="mt-2">目标 {diagnostics.targetHz} Hz · 样本 {diagnostics.sampleCount}（最近 {diagnostics.retainedSamples} 条用于 p95）</p>
+            <p>命令耗时 ms：平均 {diagnostics.commandMeanMs.toFixed(1)} / p95 {diagnostics.commandP95Ms.toFixed(1)} / 最大 {diagnostics.commandMaxMs.toFixed(1)}</p>
+            <p>调度迟到 ms：平均 {diagnostics.latenessMeanMs.toFixed(1)} / 最大 {diagnostics.latenessMaxMs.toFixed(1)} · 跳过边沿 {diagnostics.skippedEdges}</p>
+            <button className="mt-3 min-h-11 rounded-lg border border-[#667655] px-3" onClick={() => {
+              const data = { notice: "API timing, NOT measured LED frequency. Local only.", ...controller.current!.getDiagnostics() };
+              const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: "application/json"}));
+              const a = document.createElement("a"); a.href = url; a.download = "torch-diagnostics.json"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }}>下载诊断 JSON</button>
+          </> : <p className="mt-2">手动启动并停止后可查看报告；新一轮手电筒运行会重置。</p>}
+        </details>}
+        {mode === "torch" && diagnostics?.observedTooSlow && <p role="status" className="mt-3 text-xs text-[#ffe0d0]">已观察到调度迟到或跳过边沿；本机跟不上目标，请降低频率。不是实测光频。</p>}
         {error && <p role="alert" className="mt-4 rounded-xl border border-[#a56d50] bg-[#402c24] p-3 text-xs text-[#ffe0d0]">{error}</p>}
         {note && <p role="status" className="mt-3 text-xs text-[#b5c3ac]">{note}</p>}
         <div data-testid="action-dock" className="fixed inset-x-0 bottom-0 z-10 border-t border-[#344032] bg-[#101710f5] px-[max(20px,env(safe-area-inset-left))] pt-3 pb-[max(16px,env(safe-area-inset-bottom))]"><div className="mx-auto max-w-[520px]"><button className="min-h-14 w-full rounded-2xl bg-[#c9ef9b] text-base font-bold text-[#1b2912]" onPointerDown={() => { invalidStart.current = validate() === null; }} onClick={() => busy ? stop() : void start()}>{busy ? "取消并停止" : "开始频闪"}</button></div></div>

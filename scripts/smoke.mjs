@@ -172,6 +172,30 @@ try {
   await cancel.waitFor(); assert(await cancel.isVisible()); await cancel.click();
   await page.evaluate(() => { window.__resolveCamera({getVideoTracks:()=>[],getTracks:()=>[]}); });
   assert.equal(await page.getByTestId("strobe-output").count(),0);
+  await page.reload();
+  await page.evaluate(() => {
+    let n=0; const track={readyState:"live",stop(){},getCapabilities:()=>({torch:true}),
+      applyConstraints:async()=>{await new Promise(r=>setTimeout(r,++n%2?10:90));}};
+    navigator.mediaDevices.getUserMedia=async()=>({getVideoTracks:()=>[track],getTracks:()=>[track]});
+  });
+  await page.getByRole("button",{name:"后置手电筒",exact:true}).click();
+  const diagnostic=page.getByTestId("torch-diagnostics");
+  assert.equal(await diagnostic.getAttribute("open"),null);
+  await input.fill("10");await start.click();await page.waitForTimeout(1400);
+  await page.getByRole("button",{name:"立即停止"}).click();await page.waitForTimeout(1100);
+  assert.equal(await diagnostic.getAttribute("open"),null);
+  await diagnostic.locator("summary").click();
+  assert(await diagnostic.getByText(/不是实测 LED/).isVisible());
+  assert(await diagnostic.getByText(/样本/).isVisible());
+  assert(await page.getByText(/已观察到调度迟到/).isVisible());
+  const downloadPromise=page.waitForEvent("download");
+  await page.getByRole("button",{name:"下载诊断 JSON"}).click();
+  assert.equal((await downloadPromise).suggestedFilename(),"torch-diagnostics.json");
+  for(const width of [320,390,1280]) {
+    await page.setViewportSize({width,height:844});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  }
+  console.log("PASS: mock torch collapsed diagnostics, retained stopped report, slow warning, user-gesture JSON export, mobile widths");
   assert.deepEqual(errors, []);
   console.log(
     "PASS: no consent gate or autoplay, immersive edge-to-edge output, hidden settings/header/warnings, compact accessible stop, tap anywhere, keyboard Enter, 15Hz default, all high presets, shared decimal input, invalid drafts blocked, no slider, exact mode preservation, reduced motion, mobile overflow, Escape, stop button, pagehide, visibility hidden; no page errors. Idle and black-only active screenshots; visual flashing suppressed.",

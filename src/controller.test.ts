@@ -183,3 +183,52 @@ it.each([0, -1, NaN, Infinity, 1000, 12.34])("controller rejects invalid %s inst
  expect(error).toHaveBeenCalled();
  expect(vi.getTimerCount()).toBe(0);
 });
+
+it("10Hz alternating 10/90ms writes stay on absolute grid without catch-up", async () => {
+ const h=hardware(), starts:number[]=[], states:boolean[]=[]; let inflight=0,max=0;
+ h.track.applyConstraints.mockImplementation(async (c:any)=>{
+  const on=c.advanced[0].torch; states.push(on); starts.push(performance.now());
+  max=Math.max(max,++inflight);
+  await new Promise<void>(r=>setTimeout(r,states.length%2 ? 10:90)); --inflight;
+ });
+ vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
+ const c=new StrobeController(vi.fn(),vi.fn()); await c.start("torch",10);
+ await vi.advanceTimersByTimeAsync(1000);
+ expect(starts.slice(0,8)).toEqual([0,50,200,250,400,450,600,650]);
+ expect(states.every((s,i)=>i===0 || s!==states[i-1])).toBe(true);
+ expect(max).toBe(1);
+ const d=c.getDiagnostics();
+ expect(d.sampleCount).toBe(10); expect(d.commandMeanMs).toBe(50);
+ expect(d.commandP95Ms).toBe(90); expect(d.commandMaxMs).toBe(90);
+ expect(d.skippedEdges).toBe(10); expect(d.observedTooSlow).toBe(true);
+ console.log("10Hz simulation",JSON.stringify({starts:starts.slice(0,10),...d}));
+ const stop=c.stop(); await vi.advanceTimersByTimeAsync(200); await stop;
+ expect(c.getDiagnostics().sampleCount).toBe(10);
+});
+it("late timers skip expired edges and never replay bursts",async()=>{
+ const h=hardware();vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
+ const c=new StrobeController(vi.fn(),vi.fn()); await c.start("torch",10);await flush();
+ // Move monotonic time independently, simulating a suspended event loop.
+ vi.spyOn(performance,"now").mockReturnValue(525);
+ await vi.advanceTimersByTimeAsync(50);await flush();
+ expect(h.writes).toEqual([true]);
+ vi.spyOn(performance,"now").mockReturnValue(550);
+ await vi.advanceTimersByTimeAsync(25);await flush();
+ expect(h.writes).toEqual([true,false]);
+ expect(c.getDiagnostics().skippedEdges).toBeGreaterThanOrEqual(9);
+ await c.stop();vi.restoreAllMocks();
+});
+it("diagnostics ignore stopped in-flight writes and reset with a new run",async()=>{
+ const h=hardware();let release!:()=>void;
+ h.track.applyConstraints.mockImplementationOnce(()=>new Promise<void>(r=>release=r));
+ vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
+ const c=new StrobeController(vi.fn(),vi.fn());await c.start("torch",10);await flush();
+ const stopping=c.stop();release();await stopping;
+ expect(c.getDiagnostics().sampleCount).toBe(0);
+ await c.start("torch",999);await vi.advanceTimersByTimeAsync(6000);
+ expect(c.getDiagnostics().retainedSamples).toBeLessThanOrEqual(256);
+ expect(c.getDiagnostics().sampleCount).toBeGreaterThan(256);
+ await c.stop();await c.start("torch",1);await flush();
+ expect(c.getDiagnostics().sampleCount).toBe(1);expect(c.getDiagnostics().skippedEdges).toBe(0);
+ await c.stop();
+});
