@@ -4,10 +4,9 @@ import { clampFrequency, StrobeController, type Mode } from "./controller";
 import "./style.css";
 function App() {
   const [mode, setMode] = useState<Mode>("screen"),
-    [hz, setHz] = useState(1),
+    [hz, setHz] = useState(15),
     [running, setRunning] = useState(false),
     [busy, setBusy] = useState(false),
-    [light, setLight] = useState(false),
     [error, setError] = useState(""),
     [full, setFull] = useState(false),
     [awake, setAwake] = useState(true),
@@ -15,9 +14,14 @@ function App() {
   const epoch = useRef(0),
     wake = useRef<WakeLockSentinel | null>(null),
     mounted = useRef(true);
+  const output = useRef<HTMLDivElement | null>(null);
+  const light = useRef(false);
   const controller = useRef<StrobeController | null>(null);
   if (!controller.current)
-    controller.current = new StrobeController(setLight, (message) => {
+    controller.current = new StrobeController((on) => {
+      light.current = on;
+      if (output.current) output.current.style.backgroundColor = on ? "white" : "black";
+    }, (message) => {
       setError(message);
       setRunning(false);
       setBusy(false);
@@ -102,7 +106,7 @@ function App() {
         <section className="pt-[42px] pb-[22px] min-[701px]:pt-[65px] min-[701px]:pb-[34px] [&>h1]:my-4 [&>h1]:text-[clamp(32px,5vw,48px)] [&>h1]:font-bold [&>h1]:tracking-[-2px] [&>p]:my-3.5 [&>p]:text-sm [&>p]:leading-[1.8] [&>p]:text-[#a5b0a2]">
           <div className="text-[10px] tracking-[3px] text-[#bbd79c]">A LITTLE LIGHT, YOUR RHYTHM</div>
           <h1>让光，跟上节奏。</h1>
-          <p>口袋里的频闪灯。选择一种光源，从慢一点开始。</p>
+          <p>在暗处照亮运动物体，探索定格与慢动作错觉。</p>
         </section>
         <div className="grid grid-cols-1 gap-[18px] min-[701px]:grid-cols-[1.15fr_1fr] min-[701px]:gap-6">
           <section className="rounded-[21px] border border-[#344032] bg-[#1a211bd9] p-[23px] min-[701px]:rounded-3xl min-[701px]:p-7" aria-label="频闪设置">
@@ -119,7 +123,7 @@ function App() {
                   className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent] flex flex-col items-start gap-2 rounded-2xl border border-[#3b4738] bg-[#202921] p-[18px] aria-pressed:border-[#c6ed96] aria-pressed:bg-[#2b3926] aria-pressed:shadow-[inset_0_0_0_1px_#c6ed96] [&>strong]:text-sm [&>small]:text-[11px] [&>small]:text-[#b1bda9]"
                   onClick={() => {
                     setMode(m);
-                    setHz((v) => clampFrequency(v, m));
+                    setHz(m === "screen" ? 15 : 5);
                     setError("");
                   }}
                 >
@@ -170,7 +174,7 @@ function App() {
               className="m-0 min-h-10 w-full accent-[#c5ed97] focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4"
               type="range"
               min="0.5"
-              max={mode === "screen" ? 15 : 5}
+              max={mode === "screen" ? 30 : 5}
               step="0.1"
               value={hz}
               disabled={busy || running}
@@ -178,10 +182,10 @@ function App() {
             />
             <div className="flex justify-between text-[10px] text-[#a1af9b]">
               <span>0.5 Hz · 慢</span>
-              <span>{mode === "screen" ? 15 : 5} Hz · 快</span>
+              <span>{mode === "screen" ? 30 : 5} Hz · 快</span>
             </div>
-            <div className="my-5 flex gap-[9px] [&>button]:flex-1 [&>button]:rounded-[10px] [&>button]:border [&>button]:border-[#3e4a37] [&>button]:bg-transparent [&>button]:text-xs [&>button[aria-pressed=true]]:border-[#c8ed99] [&>button[aria-pressed=true]]:bg-[#c8ed99] [&>button[aria-pressed=true]]:text-[#182210]">
-              {[0.5, 1, 2, 5].map((n) => (
+            <div className="my-5 flex gap-1.5 [&>button]:flex-1 [&>button]:rounded-[10px] [&>button]:border [&>button]:border-[#3e4a37] [&>button]:bg-transparent [&>button]:text-xs [&>button[aria-pressed=true]]:border-[#c8ed99] [&>button[aria-pressed=true]]:bg-[#c8ed99] [&>button[aria-pressed=true]]:text-[#182210]">
+              {(mode === "screen" ? [12, 15, 20, 24, 30] : [0.5, 1, 2, 5]).map((n) => (
                 <button className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent]"
                   disabled={busy || running}
                   key={n}
@@ -193,10 +197,9 @@ function App() {
               ))}
             </div>
             <p className="mt-[11px] mb-0 border-t border-[#344032] pt-[18px] text-[11px] leading-[1.8] text-[#a9b6a3]">
-              每秒约 {hz} 次闪烁 · 约 50% 占空比
+              目标每秒 {hz} 次闪光（Hz，不是显示 FPS）· 50% 目标占空比
               <br />
-              目标频率而非精密计时；屏幕刷新率、系统调度与 LED
-              响应均会造成偏差。
+              {mode === "screen" ? "未测量实际频率。60 Hz 屏幕理想交替上限 30 Hz；亮暗至少各一帧，20 / 24 Hz 等会量化、混叠，不能保证精确定格。短脉冲定格建议使用专用频闪灯。" : "LED 仅提供 0.5–5 Hz 实验性慢闪，不适合 15–30 Hz 定格。切换模式重设屏幕为 15 Hz、LED 为 5 Hz；高频效果请选屏幕或专用频闪灯。"}
             </p>
           </section>
           <aside>
@@ -259,8 +262,9 @@ function App() {
       </main>
       {running && (
         <div
+          ref={(el) => { output.current = el; if (el) el.style.backgroundColor = light.current ? "white" : "black"; }}
           data-testid="strobe-output"
-          className={"fixed inset-0 z-20 cursor-pointer overflow-hidden " + (mode === "screen" && light ? "bg-white" : "bg-black")}
+          className="fixed inset-0 z-20 cursor-pointer overflow-hidden bg-black"
           onClick={stop}
           role="presentation"
         >

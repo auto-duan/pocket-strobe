@@ -1,7 +1,7 @@
 export type Mode = "screen" | "torch";
 export const clampFrequency = (value: number, mode: Mode) =>
   Math.min(
-    mode === "torch" ? 5 : 15,
+    mode === "torch" ? 5 : 30,
     Math.max(0.5, Number.isFinite(value) ? Math.round(value * 10) / 10 : 1),
   );
 type TorchConstraint = MediaTrackConstraintSet & { torch: boolean };
@@ -11,7 +11,8 @@ export class StrobeController {
   private track?: MediaStreamTrack;
   private stream?: MediaStream;
   private queue: Promise<void> = Promise.resolve();
-  private frequency = 1;
+  private frequency = 15;
+  private frame?: number;
   private mode: Mode = "screen";
   private active = false;
   constructor(
@@ -42,6 +43,8 @@ export class StrobeController {
     ++this.generation;
     this.active = false;
     clearTimeout(this.timer);
+    if (this.frame !== undefined) cancelAnimationFrame(this.frame);
+    this.frame = undefined;
     this.light(false);
     const stream = this.stream;
     this.stream = undefined;
@@ -86,7 +89,8 @@ export class StrobeController {
       }
       if (token !== this.generation) return false;
       this.active = true;
-      void this.tick(token, true);
+      if (mode === "screen") this.screenFrames(token);
+      else void this.tick(token, true);
       return true;
     } catch (e) {
       if (token === this.generation) {
@@ -104,6 +108,26 @@ export class StrobeController {
       }
       return false;
     }
+  }
+  // One phase sample per display frame; never catch up missed edges.
+  // Bright/dark durations are quantized to display frames, not subframe pulses.
+  private screenFrames(token: number) {
+    let origin: number | undefined;
+    let previous = false;
+    const frame = (now: number) => {
+      if (!this.active || token !== this.generation) return;
+      origin ??= now;
+      const period = 1000 / this.frequency;
+      // Tiny tolerance stabilizes exact frame/period boundaries against FP error.
+      const phase = ((now - origin + 0.001) % period + period) % period;
+      const on = phase < period / 2;
+      if (on !== previous) {
+        previous = on;
+        this.light(on);
+      }
+      this.frame = requestAnimationFrame(frame);
+    };
+    this.frame = requestAnimationFrame(frame);
   }
   private async tick(token: number, on: boolean) {
     if (!this.active || token !== this.generation) return;

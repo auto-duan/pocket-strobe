@@ -24,6 +24,8 @@ function hardware(supported = true) {
 }
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => setTimeout(() => cb(performance.now()), 16));
+  vi.stubGlobal("cancelAnimationFrame", clearTimeout);
   vi.stubGlobal("window", { isSecureContext: true });
 });
 afterEach(() => {
@@ -32,7 +34,7 @@ afterEach(() => {
 });
 describe("safe frequency", () => {
   it("clamps ranges and invalid values", () => {
-    expect(clampFrequency(100, "screen")).toBe(15);
+    expect(clampFrequency(100, "screen")).toBe(30);
     expect(clampFrequency(10, "torch")).toBe(5);
     expect(clampFrequency(-2, "screen")).toBe(0.5);
     expect(clampFrequency(NaN, "screen")).toBe(1);
@@ -44,8 +46,9 @@ it("never starts automatically; screen stop cancels all future pulses", async ()
   const c = new StrobeController(light, vi.fn());
   expect(light).not.toHaveBeenCalled();
   await c.start("screen", 1);
+  await vi.advanceTimersByTimeAsync(16);
   expect(light).toHaveBeenLastCalledWith(true);
-  await vi.advanceTimersByTimeAsync(500);
+  await vi.advanceTimersByTimeAsync(512);
   expect(light).toHaveBeenLastCalledWith(false);
   await c.stop();
   light.mockClear();
@@ -135,4 +138,31 @@ it("permission denial gives actionable message", async () => {
   const c = new StrobeController(vi.fn(), error);
   expect(await c.start("torch", 1)).toBe(false);
   expect(error).toHaveBeenCalledWith(expect.stringContaining("权限被拒绝"));
+});
+
+it.each([12, 15, 20, 24, 30])("samples %s Hz once per frame and drops missed frames", async (hz) => {
+  const pending = new Map<number, FrameRequestCallback>();
+  let id = 0;
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { pending.set(++id, cb); return id; });
+  vi.stubGlobal("cancelAnimationFrame", (key: number) => pending.delete(key));
+  const light = vi.fn();
+  const c = new StrobeController(light, vi.fn());
+  await c.start("screen", hz);
+  light.mockClear();
+  const step = (now: number) => {
+    const callbacks = [...pending.values()]; pending.clear();
+    const before = light.mock.calls.length;
+    callbacks.forEach(cb => cb(now));
+    expect(light.mock.calls.length - before).toBeLessThanOrEqual(1);
+    expect(pending.size).toBe(1);
+  };
+  step(100);
+  expect(light).toHaveBeenLastCalledWith(true);
+  step(100 + 750 / hz);
+  expect(light).toHaveBeenLastCalledWith(false);
+  step(100 + 1000 * 100 / hz);
+  expect(light).toHaveBeenLastCalledWith(true);
+  await c.stop();
+  expect(pending.size).toBe(0);
+  expect(light).toHaveBeenLastCalledWith(false);
 });

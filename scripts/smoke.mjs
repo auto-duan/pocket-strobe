@@ -28,7 +28,7 @@ try {
   assert(await start.isEnabled());
   assert.equal(await page.getByLabel("我已了解闪光风险").count(), 0);
   assert.equal(await page.getByRole("dialog").count(), 0);
-  assert.equal(await page.locator("output").textContent(), "1.0");
+  assert.equal(await page.locator("output").textContent(), "15.0");
   assert.equal(await page.getByTestId("strobe-output").count(), 0);
   assert(await page.getByText("系统已开启减少动态效果").isVisible());
   assert(
@@ -55,8 +55,17 @@ try {
     path: "verification/mobile-idle.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "5 Hz", exact: true }).click();
+  for (const hz of [12, 15, 20, 24, 30]) {
+    await page.getByRole("button", { name: hz + " Hz", exact: true }).click();
+    assert.equal(await page.locator("output").textContent(), hz.toFixed(1));
+  }
+  assert.equal(await page.locator("#frequency").getAttribute("max"), "30");
+  await page.getByRole("button", {name: /后置手电筒/}).click();
   assert.equal(await page.locator("output").textContent(), "5.0");
+  assert.equal(await page.locator("#frequency").getAttribute("max"), "5");
+  assert(await page.getByText(/LED 仅提供/).isVisible());
+  await page.getByRole("button", {name: /屏幕闪光/}).click();
+  assert.equal(await page.locator("output").textContent(), "15.0");
   await start.click();
   await page.getByRole("button", { name: "立即停止" }).waitFor();
   const stop = page.getByRole("button", { name: "立即停止" });
@@ -117,7 +126,7 @@ try {
   });
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: no consent gate or autoplay, immersive edge-to-edge output, hidden settings/header/warnings, compact accessible stop, tap anywhere, keyboard Enter, 1Hz default, preset, reduced motion, mobile overflow, Escape, stop button, pagehide, visibility hidden; no page errors. Idle and black-only active screenshots; visual flashing suppressed.",
+    "PASS: no consent gate or autoplay, immersive edge-to-edge output, hidden settings/header/warnings, compact accessible stop, tap anywhere, keyboard Enter, 15Hz default, all high presets, mode limits and visible resets, reduced motion, mobile overflow, Escape, stop button, pagehide, visibility hidden; no page errors. Idle and black-only active screenshots; visual flashing suppressed.",
   );
 } finally {
   await browser?.close();
