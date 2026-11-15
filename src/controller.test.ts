@@ -29,6 +29,7 @@ beforeEach(() => {
   vi.stubGlobal("window", { isSecureContext: true });
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -201,7 +202,7 @@ it("10Hz alternating 10/90ms writes stay on absolute grid without catch-up", asy
  expect(d.sampleCount).toBe(10); expect(d.commandMeanMs).toBe(50);
  expect(d.commandP95Ms).toBe(90); expect(d.commandMaxMs).toBe(90);
  expect(d.skippedEdges).toBe(10); expect(d.observedTooSlow).toBe(true);
- console.log("10Hz simulation",JSON.stringify({starts:starts.slice(0,10),...d}));
+ console.log("10Hz simulation",JSON.stringify({starts:starts.slice(0,10),samples:d.sampleCount,skipped:d.skippedEdges}));
  const stop=c.stop(); await vi.advanceTimersByTimeAsync(200); await stop;
  expect(c.getDiagnostics().sampleCount).toBe(10);
 });
@@ -231,4 +232,82 @@ it("diagnostics ignore stopped in-flight writes and reset with a new run",async(
  await c.stop();await c.start("torch",1);await flush();
  expect(c.getDiagnostics().sampleCount).toBe(1);expect(c.getDiagnostics().skippedEdges).toBe(0);
  await c.stop();
+});
+
+// Manual monotonic clock avoids integer timer quantization and tests exact API time.
+async function simulate(delays:number[], hz=10, jitter=0, until=500) {
+ let now=0, n=0; const starts:number[]=[];
+ const tasks:{at:number; cb:()=>void}[]=[];
+ vi.spyOn(performance,"now").mockImplementation(()=>now);
+ vi.stubGlobal("setTimeout",(cb:()=>void,ms:number)=>{tasks.push({at:now+ms+jitter,cb});return tasks.length;});
+ vi.stubGlobal("clearTimeout",()=>{});
+ const h=hardware();
+ h.track.applyConstraints.mockImplementation(async()=>{
+  starts.push(now); const d=delays[n++%delays.length];
+  await new Promise<void>(r=>tasks.push({at:now+d,cb:r}));
+ });
+ vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
+ const c=new StrobeController(vi.fn(),vi.fn());await c.start("torch",hz);await flush();
+ for(let i=0;i<10000;i++) {
+  tasks.sort((a,b)=>a.at-b.at);const t=tasks[0];if(!t || t.at>until)break;
+  tasks.shift();now=t.at;t.cb();await flush();
+ }
+ return {c,starts};
+}
+it.each([0,10,35,40,48,50])("10Hz %sms API commands have zero artificial skips",async delay=>{
+ const {c,starts}=await simulate([delay]);
+ expect(starts.slice(0,8)).toEqual([0,50,100,150,200,250,300,350]);
+ expect(c.getDiagnostics().skippedEdges).toBe(0);
+ expect(c.getDiagnostics().trace[0]).toMatchObject({plannedMs:0,startMs:0,endMs:delay,durationMs:delay,state:true,edge:0,skips:0});
+});
+it("documents old completion+16 regression",()=>{
+ const starts=[0];for(let i=0;i<4;i++){
+  let edge=Math.ceil((starts.at(-1)!+40+16)/50);
+  if(edge%2===((starts.at(-1)!/50)%2))edge++;
+  starts.push(edge*50);
+ }
+ expect(starts).toEqual([0,150,300,450,600]);
+});
+it.each([0.3,1.9])("10Hz boundary timer lateness +%sms is not an omitted transition",async jitter=>{
+ const {c,starts}=await simulate([48],10,jitter);
+ expect(starts.length).toBeGreaterThanOrEqual(10);
+ expect(c.getDiagnostics().skippedEdges).toBe(0);
+ expect(c.getDiagnostics().latenessMaxMs).toBeLessThanOrEqual(jitter+1);
+});
+it.each([[54.8],[90],[48,54.8]])("overbudget %j skips exactly omitted grid transitions",async(...values)=>{
+ const delays=values as number[];
+ const {c,starts}=await simulate(delays);
+ const d=c.getDiagnostics();
+ expect(d.skippedEdges).toBeGreaterThan(0);
+ expect(d.skippedEdges).toBe(Object.values(d.skippedByReason).reduce((a,b)=>a+b,0));
+ expect(d.skippedByReason.scheduler).toBe(0);expect(d.skippedByReason.rateLimit).toBe(0);
+ expect(starts.slice(0,4)).toEqual(delays[0]===48?[0,50,200,250]:[0,150,300,450]);
+ for(let i=1;i<d.trace.length;i++)expect(d.trace[i].skips).toBe(d.trace[i].edge-d.trace[i-1].edge-1);
+});
+it("999Hz start gaps stay >=16ms and trace remains bounded",async()=>{
+ const {c,starts}=await simulate([0],999,0,6000);
+ expect(starts.length).toBeGreaterThan(256);
+ expect(starts.every((s,i)=>!i || s-starts[i-1]>=16)).toBe(true);
+ const d=c.getDiagnostics();expect(d.trace.length).toBe(256);expect(d.schemaVersion).toBe(2);
+ expect(d.skippedByReason.rateLimit).toBeGreaterThan(0);
+ d.trace[0].reasons.rateLimit=-1;expect(c.getDiagnostics().trace[0].reasons.rateLimit).not.toBe(-1);
+});
+
+it("in-flight restart cannot contaminate the new run",async()=>{
+ const h=hardware();let release!:()=>void;
+ h.track.applyConstraints.mockImplementationOnce(()=>new Promise<void>(r=>release=r));
+ vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
+ const c=new StrobeController(vi.fn(),vi.fn());await c.start("torch",10);await flush();
+ const restarting=c.start("torch",10);await flush();release();expect(await restarting).toBe(true);await flush();
+ expect(c.getDiagnostics().sampleCount).toBe(1);expect(c.getDiagnostics().trace.map(t=>t.edge)).toEqual([0]);
+ await c.stop();expect(vi.getTimerCount()).toBe(0);
+});
+it("early callback rearms without an early command",async()=>{
+ const h=hardware();vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
+ const c=new StrobeController(vi.fn(),vi.fn());await c.start("torch",10);await flush();
+ vi.spyOn(performance,"now").mockReturnValue(49.7);
+ await vi.advanceTimersByTimeAsync(50);expect(h.writes).toEqual([true]);
+ vi.mocked(performance.now).mockReturnValue(50.3);
+ await vi.advanceTimersByTimeAsync(1);expect(h.writes).toEqual([true,false]);
+ expect(c.getDiagnostics().skippedEdges).toBe(0);await c.stop();
 });

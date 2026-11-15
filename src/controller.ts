@@ -7,19 +7,26 @@ export function parseFrequency(draft: string): number | null {
 export const validFrequency = (value: number) => Number.isFinite(value) && value >= 0.1 && value <= 999 && Math.abs(value * 10 - Math.round(value * 10)) < 1e-9;
 type TorchConstraint = MediaTrackConstraintSet & { torch: boolean };
 export interface TorchDiagnostics {
+ schemaVersion: number; schedulerVersion: string; runDurationMs: number; trace: CommandTrace[]; skippedByReason: Record<SkipReason, number>;
  targetHz: number; sampleCount: number; retainedSamples: number;
  commandMeanMs: number; commandP95Ms: number; commandMaxMs: number;
  latenessMeanMs: number; latenessMaxMs: number; skippedEdges: number;
  observedTooSlow: boolean; active: boolean;
 }
+type SkipReason = "scheduler" | "rateLimit" | "commandBudget";
+interface CommandTrace { plannedMs: number; startMs: number; endMs: number; durationMs: number; state: boolean; edge: number; skips: number; reasons: Record<SkipReason, number>; }
 export class StrobeController {
+ private trace: CommandTrace[] = [];
+ private reasons = {scheduler:0, rateLimit:0, commandBudget:0};
+ private pendingReasons = {scheduler:0, rateLimit:0, commandBudget:0};
+ private lastStart = -Infinity; private endedAt: number | undefined;
  private samples: number[] = [];
  private sampleCount = 0; private commandTotal = 0; private commandMax = 0;
  private lateTotal = 0; private lateMax = 0; private skipped = 0; private observations = 0;
  private origin = 0; private nextEdge = 0; private lastState = false;
  getDiagnostics(): TorchDiagnostics {
    const sorted = [...this.samples].sort((a,b)=>a-b);
-   return { targetHz: this.frequency, sampleCount: this.sampleCount, retainedSamples: sorted.length,
+   return { schemaVersion: 2, schedulerVersion: "start-grid-v2", runDurationMs: this.sampleCount || this.active ? (this.endedAt ?? performance.now())-this.origin : 0, trace: this.trace.map(t=>({...t,reasons:{...t.reasons}})), skippedByReason: {...this.reasons}, targetHz: this.frequency, sampleCount: this.sampleCount, retainedSamples: sorted.length,
      commandMeanMs: this.sampleCount ? this.commandTotal/this.sampleCount : 0,
      commandP95Ms: sorted[Math.max(0,Math.ceil(sorted.length*.95)-1)] ?? 0, commandMaxMs: this.commandMax,
      latenessMeanMs: this.observations ? this.lateTotal/this.observations : 0,
@@ -45,10 +52,11 @@ export class StrobeController {
     if (!validFrequency(value)) throw new RangeError("频率须为 0.1–999 Hz，最多一位小数。");
     this.frequency = value;
   }
-  private write(track: MediaStreamTrack, on: boolean) {
-    const operation = this.queue.then(() =>
-      track.applyConstraints({ advanced: [{ torch: on } as TorchConstraint] }),
-    );
+  private write(track: MediaStreamTrack, on: boolean, started?: () => void) {
+    const operation = this.queue.then(() => {
+      started?.();
+      return track.applyConstraints({ advanced: [{ torch: on } as TorchConstraint] });
+    });
     this.queue = operation.catch(() => {});
     return operation;
   }
@@ -63,6 +71,7 @@ export class StrobeController {
     }
   }
   async stop() {
+    if (this.active && this.mode === "torch") this.endedAt = performance.now();
     ++this.generation;
     this.active = false;
     clearTimeout(this.timer);
@@ -116,6 +125,8 @@ export class StrobeController {
       else {
  this.samples=[]; this.sampleCount=this.commandTotal=this.commandMax=0;
  this.lateTotal=this.lateMax=this.skipped=this.observations=0;
+ this.trace=[]; this.reasons={scheduler:0,rateLimit:0,commandBudget:0};
+ this.pendingReasons={scheduler:0,rateLimit:0,commandBudget:0}; this.lastStart=-Infinity; this.endedAt=undefined;
  this.origin=performance.now(); this.nextEdge=0; this.lastState=false;
  void this.tick(token);
  }
@@ -157,36 +168,60 @@ export class StrobeController {
     };
     this.frame = requestAnimationFrame(frame);
   }
-  // Absolute monotonic grid; missed edges are never replayed.
+  // Absolute grid; minimum spacing is measured from actual command START.
   private async tick(token: number) {
     if (!this.active || token !== this.generation || !this.track) return;
-    const half = 500 / this.frequency, began = performance.now();
-    const late = Math.max(0, began - this.origin - this.nextEdge * half);
-    const latest = Math.max(this.nextEdge, Math.floor((began-this.origin)/half));
-    this.skipped += latest-this.nextEdge; this.nextEdge=latest;
-    const on = latest % 2 === 0;
-    this.lateTotal+=late; this.lateMax=Math.max(this.lateMax,late); this.observations++;
+    const half = 500 / this.frequency;
+    const deadline = () => this.origin + this.nextEdge * half;
+    const omit = (reason: SkipReason) => {
+      this.skipped++; this.reasons[reason]++; this.pendingReasons[reason]++; this.nextEdge++;
+    };
+    const schedule = () => {
+      this.timer=setTimeout(()=>void this.tick(token),Math.max(0,deadline()-performance.now()));
+    };
+    const now=performance.now();
+    // Early timers rearm; small lateness retains the current grid interval.
+    if(now<deadline() || now<this.lastStart+16) {
+      this.timer=setTimeout(()=>void this.tick(token),Math.max(1,Math.max(deadline(),this.lastStart+16)-now)); return;
+    }
+    let latest=Math.floor((now-this.origin+1e-7)/half);
+    // Under sub-timer-resolution grids, use the latest opposite phase rather
+    // than starving forever on repeated same-parity timer samples.
+    if (half < 1 && (latest%2===0)===this.lastState && latest>this.nextEdge) latest--;
+    while(this.nextEdge<latest) omit("scheduler");
+    if((this.nextEdge%2===0)===this.lastState) {
+      omit("scheduler");
+      // Preserve the next opposite edge on rearm, even when timer resolution
+      // exceeds a half-period: otherwise every callback can alias same-state.
+      this.timer=setTimeout(()=>void this.tick(token),Math.max(1,Math.ceil(deadline()-performance.now())));
+      return;
+    }
+    const edge=this.nextEdge, planned=deadline(), on=edge%2===0;
+    let began=now;
     try {
-      if (on !== this.lastState) {
-        await this.write(this.track,on);
-        if (!this.active || token !== this.generation) return;
-        const duration=performance.now()-began;
-        this.sampleCount++; this.commandTotal+=duration; this.commandMax=Math.max(this.commandMax,duration);
-        if (this.samples.length===256) this.samples.shift();
-        this.samples.push(duration); this.lastState=on;
+      await this.write(this.track,on,()=>{began=performance.now();});
+      if(!this.active || token!==this.generation) return;
+      const end=performance.now(), duration=end-began, late=Math.max(0,began-planned);
+      this.lastStart=began; this.lastState=on;
+      this.sampleCount++; this.commandTotal+=duration; this.commandMax=Math.max(this.commandMax,duration);
+      this.lateTotal+=late; this.lateMax=Math.max(this.lateMax,late); this.observations++;
+      if(this.samples.length===256) this.samples.shift(); this.samples.push(duration);
+      if(this.trace.length===256) this.trace.shift();
+      this.trace.push({plannedMs:planned-this.origin,startMs:began-this.origin,endMs:end-this.origin,
+        durationMs:duration,state:on,edge,skips:Object.values(this.pendingReasons).reduce((a,b)=>a+b,0),reasons:{...this.pendingReasons}});
+      this.pendingReasons={scheduler:0,rateLimit:0,commandBudget:0}; this.nextEdge++;
+      // Each omitted transition (including parity partner) gets exactly one cause.
+      // Epsilon preserves completed exact boundaries; no completion+16ms floor.
+      let cause: SkipReason="commandBudget";
+      while(deadline()<end-1e-7 || deadline()<began+16 || (this.nextEdge%2===0)===this.lastState) {
+        if(deadline()<end-1e-7) cause="commandBudget";
+        else if(deadline()<began+16) cause="rateLimit";
+        omit(cause);
       }
-      if (!this.active || token !== this.generation) return;
-      // Select a future edge with opposite parity: no permanently-on aliasing,
-      // redundant commands, catch-up bursts, or more than 63 requests/second.
-      const earliest=performance.now()+16;
-      let edge=Math.max(this.nextEdge+1,Math.ceil((earliest-this.origin)/half));
-      if ((edge%2===0)===this.lastState) edge++;
-      this.skipped+=edge-this.nextEdge-1; this.nextEdge=edge;
-      this.timer=setTimeout(()=>void this.tick(token),Math.max(16,this.origin+edge*half-performance.now()));
+      schedule();
     } catch {
-      if (token===this.generation) {
-        await this.stop();
-        this.error("手电筒控制失败，已停止。请降低频率或改用屏幕模式。");
+      if(token===this.generation) {
+        await this.stop(); this.error("手电筒控制失败，已停止。请降低频率或改用屏幕模式。");
       }
     }
   }
