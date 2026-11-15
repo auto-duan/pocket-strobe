@@ -139,7 +139,7 @@ function App() {
           {diagnostics ? <>
             <p className="mt-2">目标 {diagnostics.targetHz} Hz · 样本 {diagnostics.sampleCount}（最近 {diagnostics.retainedSamples} 条用于 p95）</p>
             <p>命令耗时 ms：平均 {diagnostics.commandMeanMs.toFixed(1)} / p95 {diagnostics.commandP95Ms.toFixed(1)} / 最大 {diagnostics.commandMaxMs.toFixed(1)}</p>
-            <p>调度迟到 ms：平均 {diagnostics.latenessMeanMs.toFixed(1)} / 最大 {diagnostics.latenessMaxMs.toFixed(1)} · 跳过边沿 {diagnostics.skippedEdges}</p>
+            <p>调度迟到 ms：平均 {diagnostics.latenessMeanMs.toFixed(1)} / 最大 {diagnostics.latenessMaxMs.toFixed(1)} · 跨过名义时间槽 {diagnostics.skippedEdges}</p>
             <button className="mt-3 min-h-11 rounded-lg border border-[#667655] px-3" onClick={() => {
               const data = { notice: "API timing, NOT measured LED frequency. Local only.", ...controller.current!.getDiagnostics() };
               const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: "application/json"}));
@@ -147,7 +147,7 @@ function App() {
             }}>下载诊断 JSON</button>
           </> : <p className="mt-2">手动启动并停止后可查看报告；新一轮手电筒运行会重置。</p>}
         </details>}
-        {mode === "torch" && diagnostics?.observedTooSlow && <p role="status" className="mt-3 text-xs text-[#ffe0d0]">已观察到调度迟到或跳过边沿；本机跟不上目标，请降低频率。不是实测光频。</p>}
+        {mode === "torch" && diagnostics?.observedTooSlow && <p role="status" className="mt-3 text-xs text-[#ffe0d0]">已观察到调度迟到或重定相；本机跟不上目标，请降低频率。不是实测光频。</p>}
         {error && <p role="alert" className="mt-4 rounded-xl border border-[#a56d50] bg-[#402c24] p-3 text-xs text-[#ffe0d0]">{error}</p>}
         {note && <p role="status" className="mt-3 text-xs text-[#b5c3ac]">{note}</p>}
         <div data-testid="action-dock" className="fixed inset-x-0 bottom-0 z-10 border-t border-[#344032] bg-[#101710f5] px-[max(20px,env(safe-area-inset-left))] pt-3 pb-[max(16px,env(safe-area-inset-bottom))]"><div className="mx-auto max-w-[520px]"><button className="min-h-14 w-full rounded-2xl bg-[#c9ef9b] text-base font-bold text-[#1b2912]" onPointerDown={() => { invalidStart.current = validate() === null; }} onClick={() => busy ? stop() : void start()}>{busy ? "取消并停止" : "开始频闪"}</button></div></div>

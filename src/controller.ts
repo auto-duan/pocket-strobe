@@ -14,7 +14,7 @@ export interface TorchDiagnostics {
  observedTooSlow: boolean; active: boolean;
 }
 type SkipReason = "scheduler" | "rateLimit" | "commandBudget";
-interface CommandTrace { plannedMs: number; startMs: number; endMs: number; durationMs: number; state: boolean; edge: number; skips: number; reasons: Record<SkipReason, number>; }
+interface CommandTrace { timing?: "onTime" | "delayed" | "resync"; delayReason?: SkipReason; resyncMs?: number; plannedMs: number; startMs: number; endMs: number; durationMs: number; state: boolean; edge: number; skips: number; reasons: Record<SkipReason, number>; }
 export class StrobeController {
  private trace: CommandTrace[] = [];
  private reasons = {scheduler:0, rateLimit:0, commandBudget:0};
@@ -23,15 +23,16 @@ export class StrobeController {
  private samples: number[] = [];
  private sampleCount = 0; private commandTotal = 0; private commandMax = 0;
  private lateTotal = 0; private lateMax = 0; private skipped = 0; private observations = 0;
+ private previousEnd = -Infinity; private phaseShift = 0; private targetTime = 0;
  private origin = 0; private nextEdge = 0; private lastState = false;
  getDiagnostics(): TorchDiagnostics {
    const sorted = [...this.samples].sort((a,b)=>a-b);
-   return { schemaVersion: 2, schedulerVersion: "start-grid-v2", runDurationMs: this.sampleCount || this.active ? (this.endedAt ?? performance.now())-this.origin : 0, trace: this.trace.map(t=>({...t,reasons:{...t.reasons}})), skippedByReason: {...this.reasons}, targetHz: this.frequency, sampleCount: this.sampleCount, retainedSamples: sorted.length,
+   return { schemaVersion: 2, schedulerVersion: "bounded-rebase-v3", runDurationMs: this.sampleCount || this.active ? (this.endedAt ?? performance.now())-this.origin : 0, trace: this.trace.map(t=>({...t,reasons:{...t.reasons}})), skippedByReason: {...this.reasons}, targetHz: this.frequency, sampleCount: this.sampleCount, retainedSamples: sorted.length,
      commandMeanMs: this.sampleCount ? this.commandTotal/this.sampleCount : 0,
      commandP95Ms: sorted[Math.max(0,Math.ceil(sorted.length*.95)-1)] ?? 0, commandMaxMs: this.commandMax,
      latenessMeanMs: this.observations ? this.lateTotal/this.observations : 0,
      latenessMaxMs: this.lateMax, skippedEdges: this.skipped,
-     observedTooSlow: this.observations >= 3 && (this.skipped > 0 || this.lateMax > 500/this.frequency),
+     observedTooSlow: this.observations >= 3 && (this.skipped > 0 || this.lateMax > Math.min(4,50/this.frequency)),
      active: this.active && this.mode === "torch" };
  }
 
@@ -127,7 +128,7 @@ export class StrobeController {
  this.lateTotal=this.lateMax=this.skipped=this.observations=0;
  this.trace=[]; this.reasons={scheduler:0,rateLimit:0,commandBudget:0};
  this.pendingReasons={scheduler:0,rateLimit:0,commandBudget:0}; this.lastStart=-Infinity; this.endedAt=undefined;
- this.origin=performance.now(); this.nextEdge=0; this.lastState=false;
+ this.origin=performance.now(); this.previousEnd=-Infinity; this.phaseShift=0; this.targetTime=this.origin; this.nextEdge=0; this.lastState=false;
  void this.tick(token);
  }
       return true;
@@ -168,57 +169,42 @@ export class StrobeController {
     };
     this.frame = requestAnimationFrame(frame);
   }
-  // Absolute grid; minimum spacing is measured from actual command START.
+  // One pending opposite transition; preserve feasible grid, rebase overload.
   private async tick(token: number) {
     if (!this.active || token !== this.generation || !this.track) return;
     const half = 500 / this.frequency;
-    const deadline = () => this.origin + this.nextEdge * half;
-    const omit = (reason: SkipReason) => {
-      this.skipped++; this.reasons[reason]++; this.pendingReasons[reason]++; this.nextEdge++;
-    };
-    const schedule = () => {
-      this.timer=setTimeout(()=>void this.tick(token),Math.max(0,deadline()-performance.now()));
-    };
-    const now=performance.now();
-    // Early timers rearm; small lateness retains the current grid interval.
-    if(now<deadline() || now<this.lastStart+16) {
-      this.timer=setTimeout(()=>void this.tick(token),Math.max(1,Math.max(deadline(),this.lastStart+16)-now)); return;
+    const spacing = Math.max(16, half / 2);
+    const tolerance = Math.min(4, half * .1);
+    const now = performance.now();
+    const eligible = Math.max(this.targetTime, this.lastStart + spacing);
+    if (now < eligible - 1e-7) {
+      this.timer=setTimeout(()=>void this.tick(token),Math.max(1,eligible-now)); return;
     }
-    let latest=Math.floor((now-this.origin+1e-7)/half);
-    // Under sub-timer-resolution grids, use the latest opposite phase rather
-    // than starving forever on repeated same-parity timer samples.
-    if (half < 1 && (latest%2===0)===this.lastState && latest>this.nextEdge) latest--;
-    while(this.nextEdge<latest) omit("scheduler");
-    if((this.nextEdge%2===0)===this.lastState) {
-      omit("scheduler");
-      // Preserve the next opposite edge on rearm, even when timer resolution
-      // exceeds a half-period: otherwise every callback can alias same-state.
-      this.timer=setTimeout(()=>void this.tick(token),Math.max(1,Math.ceil(deadline()-performance.now())));
-      return;
-    }
-    const edge=this.nextEdge, planned=deadline(), on=edge%2===0;
+    const edge=this.nextEdge, planned=this.targetTime, on=!this.lastState;
     let began=now;
     try {
       await this.write(this.track,on,()=>{began=performance.now();});
       if(!this.active || token!==this.generation) return;
       const end=performance.now(), duration=end-began, late=Math.max(0,began-planned);
-      this.lastStart=began; this.lastState=on;
+      const delay=Math.max(0,began-planned), resync=delay>tolerance;
+      const cause: SkipReason=planned<this.lastStart+spacing-1e-7 ? "rateLimit"
+        : planned<this.previousEnd-1e-7 ? "commandBudget" : "scheduler";
+      // Bypassed nominal slots, not imaginary optical transitions.
+      const bypassed=resync ? Math.floor((delay+1e-7)/half) : 0;
+      this.skipped+=bypassed; this.reasons[cause]+=bypassed; this.pendingReasons[cause]+=bypassed;
+      if(resync) this.phaseShift+=delay;
+      this.lastStart=began; this.lastState=on; this.previousEnd=end;
       this.sampleCount++; this.commandTotal+=duration; this.commandMax=Math.max(this.commandMax,duration);
       this.lateTotal+=late; this.lateMax=Math.max(this.lateMax,late); this.observations++;
       if(this.samples.length===256) this.samples.shift(); this.samples.push(duration);
       if(this.trace.length===256) this.trace.shift();
       this.trace.push({plannedMs:planned-this.origin,startMs:began-this.origin,endMs:end-this.origin,
-        durationMs:duration,state:on,edge,skips:Object.values(this.pendingReasons).reduce((a,b)=>a+b,0),reasons:{...this.pendingReasons}});
+        durationMs:duration,state:on,edge,timing:resync?"resync":delay>1e-7?"delayed":"onTime",delayReason:delay>1e-7?cause:undefined,resyncMs:resync?delay:0,skips:Object.values(this.pendingReasons).reduce((a,b)=>a+b,0),reasons:{...this.pendingReasons}});
       this.pendingReasons={scheduler:0,rateLimit:0,commandBudget:0}; this.nextEdge++;
-      // Each omitted transition (including parity partner) gets exactly one cause.
-      // Epsilon preserves completed exact boundaries; no completion+16ms floor.
-      let cause: SkipReason="commandBudget";
-      while(deadline()<end-1e-7 || deadline()<began+16 || (this.nextEdge%2===0)===this.lastState) {
-        if(deadline()<end-1e-7) cause="commandBudget";
-        else if(deadline()<began+16) cause="rateLimit";
-        omit(cause);
-      }
-      schedule();
+      // Never parity-skip the pending opposite state or queue historical edges.
+      this.targetTime=this.origin+this.nextEdge*half+this.phaseShift;
+      this.timer=setTimeout(()=>void this.tick(token),Math.max(0,
+        Math.max(this.targetTime,began+spacing)-performance.now()));
     } catch {
       if(token===this.generation) {
         await this.stop(); this.error("手电筒控制失败，已停止。请降低频率或改用屏幕模式。");

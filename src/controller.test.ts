@@ -185,7 +185,7 @@ it.each([0, -1, NaN, Infinity, 1000, 12.34])("controller rejects invalid %s inst
  expect(vi.getTimerCount()).toBe(0);
 });
 
-it("10Hz alternating 10/90ms writes stay on absolute grid without catch-up", async () => {
+it("10Hz alternating slow writes rebase without catch-up", async () => {
  const h=hardware(), starts:number[]=[], states:boolean[]=[]; let inflight=0,max=0;
  h.track.applyConstraints.mockImplementation(async (c:any)=>{
   const on=c.advanced[0].torch; states.push(on); starts.push(performance.now());
@@ -195,16 +195,16 @@ it("10Hz alternating 10/90ms writes stay on absolute grid without catch-up", asy
  vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
  const c=new StrobeController(vi.fn(),vi.fn()); await c.start("torch",10);
  await vi.advanceTimersByTimeAsync(1000);
- expect(starts.slice(0,8)).toEqual([0,50,200,250,400,450,600,650]);
+ expect(starts.slice(0,8)).toEqual([0,50,141,191,282,332,423,473]);
  expect(states.every((s,i)=>i===0 || s!==states[i-1])).toBe(true);
  expect(max).toBe(1);
  const d=c.getDiagnostics();
- expect(d.sampleCount).toBe(10); expect(d.commandMeanMs).toBe(50);
+ expect(d.sampleCount).toBe(15); expect(d.commandMeanMs).toBeCloseTo(710/15);
  expect(d.commandP95Ms).toBe(90); expect(d.commandMaxMs).toBe(90);
- expect(d.skippedEdges).toBe(10); expect(d.observedTooSlow).toBe(true);
+ expect(d.skippedEdges).toBe(0); expect(d.trace.some(t=>t.timing==="resync")).toBe(true);
  console.log("10Hz simulation",JSON.stringify({starts:starts.slice(0,10),samples:d.sampleCount,skipped:d.skippedEdges}));
  const stop=c.stop(); await vi.advanceTimersByTimeAsync(200); await stop;
- expect(c.getDiagnostics().sampleCount).toBe(10);
+ expect(c.getDiagnostics().sampleCount).toBe(15);
 });
 it("late timers skip expired edges and never replay bursts",async()=>{
  const h=hardware();vi.stubGlobal("navigator",{mediaDevices:{getUserMedia:async()=>h.stream}});
@@ -212,7 +212,7 @@ it("late timers skip expired edges and never replay bursts",async()=>{
  // Move monotonic time independently, simulating a suspended event loop.
  vi.spyOn(performance,"now").mockReturnValue(525);
  await vi.advanceTimersByTimeAsync(50);await flush();
- expect(h.writes).toEqual([true]);
+ expect(h.writes).toEqual([true,false]);
  vi.spyOn(performance,"now").mockReturnValue(550);
  await vi.advanceTimersByTimeAsync(25);await flush();
  expect(h.writes).toEqual([true,false]);
@@ -274,15 +274,27 @@ it.each([0.3,1.9])("10Hz boundary timer lateness +%sms is not an omitted transit
  expect(c.getDiagnostics().skippedEdges).toBe(0);
  expect(c.getDiagnostics().latenessMaxMs).toBeLessThanOrEqual(jitter+1);
 });
-it.each([[54.8],[90],[48,54.8]])("overbudget %j skips exactly omitted grid transitions",async(...values)=>{
- const delays=values as number[];
- const {c,starts}=await simulate(delays);
+it.each([54.8,90,300])("overbudget %sms rebases instead of parity skipping",async delay=>{
+ const {c,starts}=await simulate([delay],10,0,1200);
+ expect(starts.slice(0,4)).toEqual([0,delay,delay*2,delay*3]);
  const d=c.getDiagnostics();
- expect(d.skippedEdges).toBeGreaterThan(0);
+ expect(d.trace.slice(1).every(t=>t.timing==="resync" && t.delayReason==="commandBudget")).toBe(true);
  expect(d.skippedEdges).toBe(Object.values(d.skippedByReason).reduce((a,b)=>a+b,0));
- expect(d.skippedByReason.scheduler).toBe(0);expect(d.skippedByReason.rateLimit).toBe(0);
- expect(starts.slice(0,4)).toEqual(delays[0]===48?[0,50,200,250]:[0,150,300,450]);
- for(let i=1;i<d.trace.length;i++)expect(d.trace[i].skips).toBe(d.trace[i].edge-d.trace[i-1].edge-1);
+});
+it("provided partial Android boundary has no artificial 150ms interval",async()=>{
+ const delays=Array(31).fill(35); delays[30]=51.3;
+ const {c,starts}=await simulate(delays,10,.5,1800);
+ expect(starts[30]).toBeCloseTo(1500.5);
+ expect(starts[31]).toBeCloseTo(1552.3); // completion 1551.8 + mocked timer .5
+ expect(starts[32]).toBeCloseTo(1600.5);
+ expect(c.getDiagnostics().trace.find(t=>t.edge===31)?.timing).toBe("delayed");
+ console.log("partial trace regression",JSON.stringify({before:[1500.5,1650.2],after:starts.slice(30,35)}));
+});
+it.each([50,50.1,51.3,54.8,90,300])("fast recovery after %sms never compresses states",async delay=>{
+ const {starts}=await simulate([delay,0,0,0,0],10,0,1200);
+ expect(starts[1]).toBeCloseTo(delay);
+ expect(starts.every((s,i)=>!i||s-starts[i-1]>=25-1e-7)).toBe(true);
+ expect(starts[2]-starts[1]).toBeGreaterThanOrEqual(delay<=54 ? 46 : 50);
 });
 it("999Hz start gaps stay >=16ms and trace remains bounded",async()=>{
  const {c,starts}=await simulate([0],999,0,6000);

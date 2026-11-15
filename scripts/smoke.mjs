@@ -174,8 +174,12 @@ try {
   assert.equal(await page.getByTestId("strobe-output").count(),0);
   await page.reload();
   await page.evaluate(() => {
-    let n=0; const track={readyState:"live",stop(){},getCapabilities:()=>({torch:true}),
-      applyConstraints:async()=>{await new Promise(r=>setTimeout(r,++n%2?10:90));}};
+    let n=0; window.__torchTimeline=[]; let inflight=0; const track={readyState:"live",stop(){},getCapabilities:()=>({torch:true}),
+      applyConstraints:async(c)=>{const entry={start:performance.now(),state:c.advanced[0].torch,end:0};
+        if(inflight++) throw new Error("overlapping torch write");
+        window.__torchTimeline.push(entry);
+        await new Promise(r=>setTimeout(r,[35,48,51.3,0,54.8,90,300,10][n++%8]));
+        entry.end=performance.now(); inflight--;}};
     navigator.mediaDevices.getUserMedia=async()=>({getVideoTracks:()=>[track],getTracks:()=>[track]});
   });
   await page.getByRole("button",{name:"后置手电筒",exact:true}).click();
@@ -183,6 +187,14 @@ try {
   assert.equal(await diagnostic.getAttribute("open"),null);
   await input.fill("10");await start.click();await page.waitForTimeout(1400);
   await page.getByRole("button",{name:"立即停止"}).click();await page.waitForTimeout(1100);
+  const timeline=await page.evaluate(()=>window.__torchTimeline);
+  assert(timeline.length>5);
+  for(let i=1;i<timeline.length-1;i++) {
+    assert(timeline[i].start>=timeline[i-1].end);
+    assert(timeline[i].start-timeline[i-1].start>=24);
+    assert.notEqual(timeline[i].state,timeline[i-1].state);
+  }
+  console.log("variable torch API timeline",JSON.stringify(timeline));
   assert.equal(await diagnostic.getAttribute("open"),null);
   await diagnostic.locator("summary").click();
   assert(await diagnostic.getByText(/不是实测 LED/).isVisible());
