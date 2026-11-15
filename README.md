@@ -1,6 +1,6 @@
 # 微光 · Pocket Strobe
 
-纯前端 Vite + React + TypeScript 手机频闪页面。没有后端，不显示、录制或上传相机画面，不加载外部字体或分析脚本。
+纯前端 Vite + React + TypeScript + Tailwind CSS 4（官方 Vite 插件） 手机频闪页面。没有后端，不显示、录制或上传相机画面，不加载外部字体或分析脚本。
 
 在线使用：https://auto-duan.github.io/pocket-strobe/
 
