@@ -36,24 +36,23 @@ try {
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   );
-  for (const width of [320, 360, 390, 700, 701, 1280]) {
-    await page.setViewportSize({ width, height: 844 });
-    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "overflow at " + width);
-    const styles = await page.getByRole("region", { name: "频闪设置" }).evaluate(el => {
-      const style = getComputedStyle(el);
-      return { radius: style.borderRadius, background: style.backgroundColor, padding: style.paddingTop, columns: getComputedStyle(el.parentElement).gridTemplateColumns };
-    });
-    assert.equal(styles.radius, width <= 700 ? "21px" : "24px");
-    assert.equal(styles.padding, width <= 700 ? "23px" : "28px");
-    assert.equal(styles.background, "rgba(26, 33, 27, 0.85)");
-    assert.equal(styles.columns.split(" ").length, width <= 700 ? 1 : 2);
-    console.log("Tailwind computed styles", width, styles);
+  for (const [width,height] of [[320,568],[390,844],[1280,900]]) {
+    await page.setViewportSize({width,height});
+    for (const y of [0,200,10000]) {
+      await page.evaluate(y => scrollTo(0,y),y);
+      assert(await start.evaluate(el => {const r=el.getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight && r.height>=44;}));
+      assert(await page.getByTestId("action-dock").evaluate(el => getComputedStyle(el).position === "fixed" && el.getBoundingClientRect().bottom === innerHeight));
+      assert(await page.evaluate(() => document.documentElement.scrollWidth<=innerWidth));
+    }
+    assert(await page.locator('main').evaluate(el => parseFloat(getComputedStyle(el).paddingBottom)>document.querySelector('[data-testid="action-dock"]').getBoundingClientRect().height));
   }
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => { document.documentElement.style.scrollBehavior="auto"; scrollTo(0,0); });
+  await page.waitForTimeout(150);
   await mkdir("verification", { recursive: true });
   await page.screenshot({
     path: "verification/mobile-idle.png",
-    fullPage: true,
+    fullPage: false,
   });
   const input = page.locator("#frequency");
   for (const width of [390,1280]) {
@@ -70,19 +69,27 @@ try {
     await page.getByRole("button",{name:"立即停止"}).click();
     assert.equal(await input.inputValue(),draft);
   }
-  await input.fill("12.");
-  assert.equal(await input.inputValue(),"12.");
-  await input.blur();
-  assert.equal(await input.getAttribute("aria-invalid"),"false");
-  for (const draft of ["", "0", "-1", "NaN", "Infinity", "1000", "12.34", "1e2", "0.01"]) {
-    await input.fill(draft);
-    await start.click();
+  assert.equal(await input.getAttribute("type"),"number");
+  await input.fill("12"); await input.focus();
+  await page.keyboard.type("abcEe+-");
+  assert.equal(await input.inputValue(),"12");
+  for (const text of ["abc","1e2","-1","12.34","Infinity"]) {
+    const prevented = await input.evaluate((el,text) => { const dt=new DataTransfer(); dt.setData('text',text); return !el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true})); },text);
+    assert(prevented); assert.equal(await input.inputValue(),"12");
+  }
+  await input.fill(""); await page.keyboard.type("12.3"); assert.equal(await input.inputValue(),"12.3");
+  await input.fill(""); await page.keyboard.type("12."); await start.click(); await page.getByRole("button",{name:"立即停止"}).click();
+  for (const draft of ["", "0", "1000", "0.01"]) {
+    await input.fill(draft); await start.click();
     assert.equal(await page.getByTestId("strobe-output").count(),0);
-    assert.equal(await input.inputValue(),draft);
     assert.equal(await input.getAttribute("aria-invalid"),"true");
     assert(await page.locator("#frequency-error").isVisible());
   }
-  for (const hz of [12,15,20,24,30]) {
+  // Bypass the UI as an extension/script might: start must validate the live DOM, never a stale React draft.
+  await input.fill("15");
+  await input.evaluate(el => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'1e2'); });
+  await start.click(); assert.equal(await page.getByTestId("strobe-output").count(),0);
+  for (const hz of [12,20,30,45,60,70]) {
     await page.getByRole("button",{name:hz+" Hz",exact:true}).click();
     await page.getByRole("button",{name:/后置手电筒/}).click();
     assert.equal(await input.inputValue(),String(hz));
@@ -154,6 +161,17 @@ try {
     path: "verification/desktop-idle.png",
     fullPage: true,
   });
+  // Pending camera permission remains cancellable; a late stream cannot restart output.
+  await page.evaluate(() => {
+    window.__resolveCamera = null;
+    navigator.mediaDevices.getUserMedia = () => new Promise(resolve => { window.__resolveCamera = resolve; });
+  });
+  await page.getByRole("button", {name:"后置手电筒",exact:true}).click();
+  await start.click();
+  const cancel = page.getByRole("button", {name:"取消并停止",exact:true});
+  await cancel.waitFor(); assert(await cancel.isVisible()); await cancel.click();
+  await page.evaluate(() => { window.__resolveCamera({getVideoTracks:()=>[],getTracks:()=>[]}); });
+  assert.equal(await page.getByTestId("strobe-output").count(),0);
   assert.deepEqual(errors, []);
   console.log(
     "PASS: no consent gate or autoplay, immersive edge-to-edge output, hidden settings/header/warnings, compact accessible stop, tap anywhere, keyboard Enter, 15Hz default, all high presets, shared decimal input, invalid drafts blocked, no slider, exact mode preservation, reduced motion, mobile overflow, Escape, stop button, pagehide, visibility hidden; no page errors. Idle and black-only active screenshots; visual flashing suppressed.",

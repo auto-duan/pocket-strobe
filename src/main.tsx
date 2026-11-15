@@ -12,10 +12,14 @@ function App() {
     [full, setFull] = useState(false),
     [awake, setAwake] = useState(true),
     [note, setNote] = useState("");
+  const invalidStart = useRef(false);
+  const frequencyInput = useRef<HTMLInputElement>(null);
   const hz = parseFrequency(draft);
   const validate = () => {
-    const value = parseFrequency(draft);
-    setFrequencyError(value === null ? "请输入 0.1–999 Hz 的普通数字，最多一位小数（不接受科学计数法）。" : "");
+    const raw = frequencyInput.current?.value ?? draft;
+    const value = frequencyInput.current?.validity.badInput || parseFrequency(draft) === null ? null : parseFrequency(raw);
+    if (raw !== draft) setDraft(raw);
+    setFrequencyError(value === null ? "请输入 0.1–999，最多一位小数。" : "");
     return value;
   };
   const epoch = useRef(0),
@@ -68,7 +72,7 @@ function App() {
   const start = async () => {
     if (busy || running) return;
     const value = validate();
-    if (value === null) return;
+    if (invalidStart.current || value === null) { invalidStart.current = false; return; }
     const token = ++epoch.current;
     setBusy(true);
     setError("");
@@ -100,147 +104,34 @@ function App() {
   const frequency = (n: number) => { setDraft(String(n)); setFrequencyError(""); };
   return (
     <>
-      <main hidden={running} className="mx-auto max-w-[1080px] pt-5 pr-[max(24px,env(safe-area-inset-right))] pb-6 pl-[max(24px,env(safe-area-inset-left))] min-[701px]:pt-8">
-        <header className="flex items-center justify-between gap-4">
-          <a className="flex items-center gap-3 text-[23px] font-[750] text-inherit no-underline focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [&>small]:ml-1.5 [&>small]:hidden [&>small]:text-[10px] [&>small]:tracking-[2px] [&>small]:text-[#a7b2a5] min-[701px]:[&>small]:block" href="./">
-            <span className="text-[32px] text-[#c9ee9b]">✳</span> 微光{" "}
-            <small>POCKET STROBE</small>
-          </a>
-          <span className="whitespace-nowrap rounded-[20px] border border-[#344234] px-3 py-2 text-[10px] text-[#a9b8a5] min-[701px]:text-[11px]">纯本地 · 无上传</span>
-        </header>
-        <section className="pt-[42px] pb-[22px] min-[701px]:pt-[65px] min-[701px]:pb-[34px] [&>h1]:my-4 [&>h1]:text-[clamp(32px,5vw,48px)] [&>h1]:font-bold [&>h1]:tracking-[-2px] [&>p]:my-3.5 [&>p]:text-sm [&>p]:leading-[1.8] [&>p]:text-[#a5b0a2]">
-          <div className="text-[10px] tracking-[3px] text-[#bbd79c]">A LITTLE LIGHT, YOUR RHYTHM</div>
-          <h1>让光，跟上节奏。</h1>
-          <p>在暗处照亮运动物体，探索定格与慢动作错觉。</p>
+      <main hidden={running} className="mx-auto max-w-[560px] px-5 pt-[max(24px,env(safe-area-inset-top))] pb-[calc(124px+env(safe-area-inset-bottom))] sm:pt-12">
+        <header className="mb-8 flex items-center justify-between"><a href="./" className="text-xl font-bold text-inherit no-underline"><span className="mr-2 text-3xl text-[#c9ef9b]">✳</span>微光</a><span className="text-[10px] tracking-[2px] text-[#98ab91]">POCKET STROBE</span></header>
+        <section aria-label="频闪设置" className="rounded-3xl border border-[#344032] bg-[#1a211b] p-5 sm:p-7">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-[#101710] p-1.5">{(["screen", "torch"] as Mode[]).map(m => <button key={m} disabled={busy} aria-pressed={mode === m} className="min-h-12 rounded-xl text-sm text-[#aebda4] aria-pressed:bg-[#35452c] aria-pressed:text-[#dbf4bf]" onClick={() => { setMode(m); setError(""); }}>{m === "screen" ? "屏幕闪光" : "后置手电筒"}</button>)}</div>
+          <label htmlFor="frequency" className="mt-8 block text-xs text-[#b2c0a7]">闪烁频率</label>
+          <div className="mt-2 flex items-baseline gap-3 border-b border-[#667655] pb-3 focus-within:border-[#c9ef9b]">
+            <input id="frequency" ref={frequencyInput} className="min-h-20 w-full min-w-0 bg-transparent text-[64px] font-medium leading-none tracking-[-3px] tabular-nums outline-none"
+              type="number" inputMode="decimal" min="0.1" max="999" step="0.1" aria-invalid={!!frequencyError} aria-describedby="frequency-help frequency-error" value={draft} disabled={busy}
+              onBeforeInput={e => { const event = e.nativeEvent as InputEvent; if (event.data && !/^[0-9.]+$/.test(event.data)) e.preventDefault(); }}
+              onPaste={e => { if (!/^\d+(?:\.\d?)?$/.test(e.clipboardData.getData("text"))) { e.preventDefault(); setFrequencyError("仅支持数字，最多一位小数。"); } }}
+              onChange={e => { const value = e.target.value; if (value === "" || /^\d+(?:\.\d?)?$/.test(value)) { setDraft(value); setFrequencyError(""); } else { e.target.value = draft; setFrequencyError("仅支持数字，最多一位小数。"); } }} onBlur={validate}
+              onKeyDown={e => { if (e.ctrlKey || e.metaKey || e.altKey) return; if (e.key.length === 1 && !/[0-9.]/.test(e.key)) e.preventDefault(); if ((e.key === "ArrowUp" || e.key === "ArrowDown") && hz !== null) { e.preventDefault(); frequency(Math.min(999, Math.max(0.1, Math.round((hz + (e.key === "ArrowUp" ? 0.1 : -0.1)) * 10) / 10))); } }} />
+            <span className="text-lg text-[#a9b99c]">Hz</span>
+          </div>
+          <p id="frequency-help" className="mt-3 text-[11px] text-[#8fa183]">0.1–999 Hz · 最多一位小数</p>
+          <p id="frequency-error" role={frequencyError ? "alert" : undefined} className="mt-2 text-xs text-[#ffe0d0]">{frequencyError}</p>
+          <div className="mt-5 grid grid-cols-3 gap-2 sm:grid-cols-6">{[12,20,30,45,60,70].map(n => <button key={n} disabled={busy} aria-pressed={hz === n} className="min-h-11 rounded-xl border border-[#3e4a37] text-xs aria-pressed:border-[#c9ef9b] aria-pressed:bg-[#c9ef9b] aria-pressed:text-[#182210]" onClick={() => frequency(n)}>{n} Hz</button>)}</div>
+          <div className="mt-6 flex flex-wrap gap-x-6 gap-y-2 border-t border-[#344032] pt-4 text-xs text-[#b5c3ac]">
+            <label className="flex min-h-11 items-center gap-2"><input className="size-4 accent-[#c9ef9b]" type="checkbox" checked={awake} onChange={e => setAwake(e.target.checked)} disabled={busy} />保持常亮</label>
+            <label className="flex min-h-11 items-center gap-2"><input className="size-4 accent-[#c9ef9b]" type="checkbox" checked={full} onChange={e => setFull(e.target.checked)} disabled={busy} />系统全屏</label>
+          </div>
         </section>
-        <div className="grid grid-cols-1 gap-[18px] min-[701px]:grid-cols-[1.15fr_1fr] min-[701px]:gap-6">
-          <section className="rounded-[21px] border border-[#344032] bg-[#1a211bd9] p-[23px] min-[701px]:rounded-3xl min-[701px]:p-7" aria-label="频闪设置">
-            <div className="flex items-center justify-between gap-3 [&>h2]:text-base [&>h2]:font-bold [&>span]:text-[9px] [&>span]:tracking-[1.5px] [&>span]:text-[#a1ae9d]">
-              <h2>光源</h2>
-              <span>01 / SOURCE</span>
-            </div>
-            <div className="mt-5 grid grid-cols-2 gap-3">
-              {(["screen", "torch"] as Mode[]).map((m) => (
-                <button
-                  key={m}
-                  disabled={running || busy}
-                  aria-pressed={mode === m}
-                  className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent] flex flex-col items-start gap-2 rounded-2xl border border-[#3b4738] bg-[#202921] p-[18px] aria-pressed:border-[#c6ed96] aria-pressed:bg-[#2b3926] aria-pressed:shadow-[inset_0_0_0_1px_#c6ed96] [&>strong]:text-sm [&>small]:text-[11px] [&>small]:text-[#b1bda9]"
-                  onClick={() => {
-                    setMode(m);
-                    setError("");
-                  }}
-                >
-                  <span className="text-[28px] text-[#ceeaa9]">
-                    {m === "screen" ? "▣" : "ϟ"}
-                  </span>
-                  <strong>{m === "screen" ? "屏幕闪光" : "后置手电筒"}</strong>
-                  <small>
-                    {m === "screen" ? "用整个屏幕发光" : "调用相机 LED"}
-                  </small>
-                </button>
-              ))}
-            </div>
-            <p className="my-[11px] text-[11px] leading-[1.8] text-[#a9b6a3]">
-              {mode === "screen"
-                ? "无需相机权限 · 建议先降低屏幕亮度"
-                : "需要 HTTPS + 后置相机权限 · iOS 浏览器通常不支持"}
-            </p>
-            <div className="flex items-center justify-between gap-3 [&>h2]:text-base [&>h2]:font-bold [&>span]:text-[9px] [&>span]:tracking-[1.5px] [&>span]:text-[#a1ae9d] mt-8 border-t border-[#344032] pt-[25px]">
-              <h2>闪烁频率</h2>
-              <span>02 / FREQUENCY</span>
-            </div>
-            <label className="mt-5 block text-sm" htmlFor="frequency">目标闪烁频率（Hz）</label>
-            <input id="frequency" className="my-3 min-h-14 w-full min-w-0 rounded-xl border border-[#667655] bg-[#202921] px-4 text-3xl tabular-nums focus-visible:outline-3 focus-visible:outline-[#d1f897]"
-              type="text" role="spinbutton" inputMode="decimal" min="0.1" max="999" step="0.1"
-              aria-valuemin={0.1} aria-valuemax={999} aria-valuenow={hz ?? undefined}
-              aria-invalid={!!frequencyError} aria-describedby="frequency-help frequency-error"
-              value={draft} disabled={busy || running}
-              onChange={(e) => { setDraft(e.target.value); setFrequencyError(""); }} onBlur={validate}
-              onKeyDown={(e) => {
-                if ((e.key === "ArrowUp" || e.key === "ArrowDown") && hz !== null) {
-                  e.preventDefault();
-                  frequency(Math.min(999, Math.max(0.1, Math.round((hz + (e.key === "ArrowUp" ? 0.1 : -0.1)) * 10) / 10)));
-                }
-              }} />
-            <p id="frequency-help" className="text-xs text-[#b7c7a7]">两种光源共用 · 0.1–999 Hz · 最多一位小数</p>
-            <p id="frequency-error" role={frequencyError ? "alert" : undefined} className="mt-2 text-xs text-[#ffe0d0]">{frequencyError}</p>
-            <div className="my-5 flex gap-1.5 [&>button]:flex-1 [&>button]:rounded-[10px] [&>button]:border [&>button]:border-[#3e4a37] [&>button]:bg-transparent [&>button]:text-xs [&>button[aria-pressed=true]]:border-[#c8ed99] [&>button[aria-pressed=true]]:bg-[#c8ed99] [&>button[aria-pressed=true]]:text-[#182210]">
-              {[12, 15, 20, 24, 30].map((n) => (
-                <button className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent]"
-                  disabled={busy || running}
-                  key={n}
-                  aria-pressed={hz === n}
-                  onClick={() => frequency(n)}
-                >
-                  {n} Hz
-                </button>
-              ))}
-            </div>
-            <p className="mt-[11px] mb-0 border-t border-[#344032] pt-[18px] text-[11px] leading-[1.8] text-[#a9b6a3]">
-              目标每秒 {hz ?? "—"} 次闪光（Hz，不是显示 FPS）· 50% 目标占空比
-              <br />
-              <strong>实际频率未测量，不能保证达到目标（包括 999 Hz）。</strong>
-              {mode === "screen" ? "屏幕每帧最多更新一次；60 Hz 屏幕理想交替上限 30 Hz，高目标会量化、混叠。" : "LED 受硬件与浏览器限制；串行写入、至少间隔 16 ms，跳过错失脉冲，不追赶。"} 切换光源不改变目标。
-            </p>
-          </section>
-          <aside>
-            <p className="my-3 text-[11px] leading-relaxed text-[#b9b09b]">闪光可能引发光敏性癫痫、眩晕或不适；有相关病史请勿使用，勿照射他人，不适立即停止。</p>
-            {typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches && (
-              <p className="my-3 text-[11px] leading-relaxed text-[#b9b09b]">系统已开启减少动态效果。建议不要启动频闪。</p>
-            )}
-            <section className="mx-1 my-[18px] grid gap-1 [&>label]:flex [&>label]:min-h-10 [&>label]:items-center [&>label]:gap-[9px] [&>label]:text-xs [&>label]:text-[#bac5b4]">
-              <label>
-                <input
-                  className="size-5 shrink-0 accent-[#c5ed97] focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4"
-                  type="checkbox"
-                  checked={awake}
-                  onChange={(e) => setAwake(e.target.checked)}
-                  disabled={busy || running}
-                />{" "}
-                尝试保持屏幕常亮
-              </label>
-              <label>
-                <input
-                  className="size-5 shrink-0 accent-[#c5ed97] focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4"
-                  type="checkbox"
-                  checked={full}
-                  onChange={(e) => setFull(e.target.checked)}
-                  disabled={busy || running}
-                />{" "}
-                启动时进入系统全屏
-              </label>
-            </section>
-            <button
-              className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent] flex min-h-[60px] w-full items-center justify-between rounded-[15px] border-0 bg-[#c9ef9b] px-[22px] font-bold text-[#1b2912] [&>span]:text-[22px]"
-              disabled={busy || running}
-              onClick={() => void start()}
-            >
-              <span>▷</span> {busy ? "正在准备光源…" : "开始频闪"}{" "}
-              <span>↗</span>
-            </button>
-            {busy && (
-              <button className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent] mt-2.5 w-full rounded-xl border border-[#b38266] bg-[#563829]" onClick={stop}>
-                取消并停止
-              </button>
-            )}
-            <p className="my-[10px] text-center text-[10px] leading-[1.8] text-[#a1ae99]">不会自动启动 · 切到后台即停止</p>
-            {error && (
-              <p className="my-[13px] rounded-xl border border-[#a56d50] bg-[#402c24] p-3 text-[13px] leading-[1.8] text-[#ffe0d0]" role="alert">
-                {error}
-              </p>
-            )}
-            {note && (
-              <p role="status" className="my-[11px] text-[11px] leading-[1.8] text-[#a9b6a3]">
-                {note}
-              </p>
-            )}
-          </aside>
-        </div>
-        <footer className="mt-10 flex flex-col justify-between gap-2.5 border-t border-[#2d382d] pt-[22px] text-[9px] tracking-[1px] text-[#98a591] min-[701px]:flex-row min-[701px]:gap-5">
-          <span>微光 / POCKET STROBE</span>
-          <span>不是医疗、求救或精密测量工具</span>
-        </footer>
+        <p className="mt-4 text-[11px] leading-relaxed text-[#95a58a]">目标频率，实际受屏幕刷新率与硬件限制。{mode === "torch" && "手电筒需相机权限，部分浏览器不支持。"}</p>
+        <p className="mt-3 text-[11px] leading-relaxed text-[#b9aa94]">闪光可能引发光敏性癫痫或不适；有相关病史请勿使用，不适立即停止。</p>
+        {typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches && <p className="mt-2 text-[11px] text-[#b9aa94]">系统已开启减少动态效果，建议不要启动频闪。</p>}
+        {error && <p role="alert" className="mt-4 rounded-xl border border-[#a56d50] bg-[#402c24] p-3 text-xs text-[#ffe0d0]">{error}</p>}
+        {note && <p role="status" className="mt-3 text-xs text-[#b5c3ac]">{note}</p>}
+        <div data-testid="action-dock" className="fixed inset-x-0 bottom-0 z-10 border-t border-[#344032] bg-[#101710f5] px-[max(20px,env(safe-area-inset-left))] pt-3 pb-[max(16px,env(safe-area-inset-bottom))]"><div className="mx-auto max-w-[520px]"><button className="min-h-14 w-full rounded-2xl bg-[#c9ef9b] text-base font-bold text-[#1b2912]" onPointerDown={() => { invalidStart.current = validate() === null; }} onClick={() => busy ? stop() : void start()}>{busy ? "取消并停止" : "开始频闪"}</button></div></div>
       </main>
       {running && (
         <div
