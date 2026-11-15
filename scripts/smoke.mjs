@@ -25,7 +25,9 @@ try {
   });
   await page.goto("http://127.0.0.1:4179");
   const start = page.getByRole("button", { name: "开始频闪" });
-  assert(await start.isDisabled());
+  assert(await start.isEnabled());
+  assert.equal(await page.getByLabel("我已了解闪光风险").count(), 0);
+  assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(await page.locator("output").textContent(), "1.0");
   assert.equal(await page.getByTestId("strobe-output").count(), 0);
   assert(await page.getByText("系统已开启减少动态效果").isVisible());
@@ -55,7 +57,6 @@ try {
   });
   await page.getByRole("button", { name: "5 Hz", exact: true }).click();
   assert.equal(await page.locator("output").textContent(), "5.0");
-  await page.getByLabel("我已了解闪光风险").check();
   await start.click();
   await page.getByRole("button", { name: "立即停止" }).waitFor();
   const stop = page.getByRole("button", { name: "立即停止" });
@@ -63,13 +64,28 @@ try {
   assert(await stop.isVisible());
   assert(await stop.evaluate(el => {
     const r = el.getBoundingClientRect();
-    return r.x >= 0 && r.y >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.height >= 88 && document.activeElement === el;
+    return r.x >= 0 && r.y >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.height >= 44 && r.height <= 48 && r.width >= 44 && r.width <= 140 && document.activeElement === el;
   }));
   assert.equal(await page.getByTestId("strobe-output").evaluate(el => getComputedStyle(el).position), "fixed");
+  for (const [width, height] of [[320,568],[390,844],[1280,900]]) {
+    await page.setViewportSize({ width, height });
+    assert(await page.getByTestId("strobe-output").evaluate(el => {
+      const r = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return r.x === 0 && r.y === 0 && r.width === innerWidth && r.height === innerHeight && style.padding === "0px" && el.children.length === 1;
+    }), "edge-to-edge output at " + width);
+    assert.equal(await page.getByRole("region", {name:"频闪设置"}).count(), 0);
+    assert.equal(await page.getByRole("banner").count(), 0);
+    assert.equal(await page.getByText("系统已开启减少动态效果").isVisible(), false);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight));
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:"verification/mobile-active-black.png"});
   await page.keyboard.press("Escape");
   await page.getByTestId("strobe-output").waitFor({ state: "detached" });
   await start.click();
-  await page.getByRole("button", { name: "立即停止" }).click();
+  await page.getByRole("button", { name: "立即停止" }).focus();
+  await page.keyboard.press("Enter");
   assert.equal(await page.getByTestId("strobe-output").count(), 0);
   await start.click();
   await page.getByRole("button", { name: "立即停止" }).waitFor();
@@ -86,6 +102,14 @@ try {
   });
   await page.getByTestId("strobe-output").waitFor({ state: "detached" });
   await page.reload();
+  assert.equal(await page.getByTestId("strobe-output").count(), 0);
+  await start.click();
+  await page.getByTestId("strobe-output").click({position:{x:1,y:1}});
+  await page.getByTestId("strobe-output").waitFor({state:"detached"});
+  await start.click();
+  await page.getByRole("button", {name:"立即停止"}).click();
+  assert.equal(await page.getByTestId("strobe-output").count(), 0);
+  await page.reload();
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({
     path: "verification/desktop-idle.png",
@@ -93,7 +117,7 @@ try {
   });
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: consent gate, 1Hz default, preset, reduced motion, mobile overflow, Escape, stop button, pagehide, visibility hidden; no page errors. Screenshots idle only; visual flashing suppressed.",
+    "PASS: no consent gate or autoplay, immersive edge-to-edge output, hidden settings/header/warnings, compact accessible stop, tap anywhere, keyboard Enter, 1Hz default, preset, reduced motion, mobile overflow, Escape, stop button, pagehide, visibility hidden; no page errors. Idle and black-only active screenshots; visual flashing suppressed.",
   );
 } finally {
   await browser?.close();

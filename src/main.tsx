@@ -5,7 +5,6 @@ import "./style.css";
 function App() {
   const [mode, setMode] = useState<Mode>("screen"),
     [hz, setHz] = useState(1),
-    [consent, setConsent] = useState(false),
     [running, setRunning] = useState(false),
     [busy, setBusy] = useState(false),
     [light, setLight] = useState(false),
@@ -56,7 +55,7 @@ function App() {
     };
   }, []);
   const start = async () => {
-    if (!consent || busy || running) return;
+    if (busy || running) return;
     const token = ++epoch.current;
     setBusy(true);
     setError("");
@@ -92,7 +91,7 @@ function App() {
   };
   return (
     <>
-      <main className="mx-auto max-w-[1080px] pt-5 pr-[max(24px,env(safe-area-inset-right))] pb-6 pl-[max(24px,env(safe-area-inset-left))] min-[701px]:pt-8">
+      <main hidden={running} className="mx-auto max-w-[1080px] pt-5 pr-[max(24px,env(safe-area-inset-right))] pb-6 pl-[max(24px,env(safe-area-inset-left))] min-[701px]:pt-8">
         <header className="flex items-center justify-between gap-4">
           <a className="flex items-center gap-3 text-[23px] font-[750] text-inherit no-underline focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [&>small]:ml-1.5 [&>small]:hidden [&>small]:text-[10px] [&>small]:tracking-[2px] [&>small]:text-[#a7b2a5] min-[701px]:[&>small]:block" href="./">
             <span className="text-[32px] text-[#c9ee9b]">✳</span> 微光{" "}
@@ -201,35 +200,10 @@ function App() {
             </p>
           </section>
           <aside>
-            <section className="rounded-[21px] border border-[#514b31] bg-[#28271e] p-[23px] min-[701px]:rounded-3xl min-[701px]:p-7 [&>h2]:text-xl [&>h2]:font-bold [&>h2]:text-[#f1dfb6] [&>p]:my-3 [&>p]:text-xs [&>p]:leading-[1.9] [&>p]:text-[#d6cdb8] [&_li]:text-xs [&_li]:leading-[1.9] [&_li]:text-[#d6cdb8] [&>ul]:my-4 [&>ul]:list-disc [&>ul]:pl-[18px]">
-              <div className="mb-3.5 grid size-[30px] place-items-center rounded-full border border-[#e0c17b] text-[#f1d48c]">!</div>
-              <h2>先确认安全，再点亮。</h2>
-              <p>
-                <strong>光敏性癫痫警告</strong>
-                ：闪光可能引发癫痫发作、眩晕或不适，即使没有既往病史也有风险。
-              </p>
-              <ul>
-                <li>有光敏性癫痫或相关病史，请勿使用。</li>
-                <li>勿直视光源、照射他人或在驾驶时使用。</li>
-                <li>远离儿童；任何不适请立即停止。</li>
-              </ul>
-              {typeof matchMedia !== "undefined" &&
-                matchMedia("(prefers-reduced-motion: reduce)").matches && (
-                  <p className="rounded-lg border border-[#b79b65] p-2.5">
-                    系统已开启减少动态效果。建议不要启动频闪。
-                  </p>
-                )}
-              <label className="flex items-start gap-2.5 border-t border-[#514b31] pt-4 text-xs leading-[1.8] [&>input]:my-px">
-                <input
-                  className="size-5 shrink-0 accent-[#c5ed97] focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4"
-                  type="checkbox"
-                  checked={consent}
-                  disabled={running || busy}
-                  onChange={(e) => setConsent(e.target.checked)}
-                />
-                <span>我已了解闪光风险，确认自己及周围的人适合使用。</span>
-              </label>
-            </section>
+            <p className="my-3 text-[11px] leading-relaxed text-[#b9b09b]">闪光可能引发光敏性癫痫、眩晕或不适；有相关病史请勿使用，勿照射他人，不适立即停止。</p>
+            {typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches && (
+              <p className="my-3 text-[11px] leading-relaxed text-[#b9b09b]">系统已开启减少动态效果。建议不要启动频闪。</p>
+            )}
             <section className="mx-1 my-[18px] grid gap-1 [&>label]:flex [&>label]:min-h-10 [&>label]:items-center [&>label]:gap-[9px] [&>label]:text-xs [&>label]:text-[#bac5b4]">
               <label>
                 <input
@@ -254,7 +228,7 @@ function App() {
             </section>
             <button
               className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent] flex min-h-[60px] w-full items-center justify-between rounded-[15px] border-0 bg-[#c9ef9b] px-[22px] font-bold text-[#1b2912] [&>span]:text-[22px]"
-              disabled={!consent || busy || running}
+              disabled={busy || running}
               onClick={() => void start()}
             >
               <span>▷</span> {busy ? "正在准备光源…" : "开始频闪"}{" "}
@@ -286,17 +260,13 @@ function App() {
       {running && (
         <div
           data-testid="strobe-output"
-          className={"fixed inset-0 z-20 flex cursor-pointer flex-col items-center justify-center pt-[max(24px,env(safe-area-inset-top))] pr-[max(24px,env(safe-area-inset-right))] pb-[max(24px,env(safe-area-inset-bottom))] pl-[max(24px,env(safe-area-inset-left))] " + (mode === "screen" && light ? "bg-white" : "bg-black")}
+          className={"fixed inset-0 z-20 cursor-pointer overflow-hidden " + (mode === "screen" && light ? "bg-white" : "bg-black")}
           onClick={stop}
           role="presentation"
         >
-          <div className="mb-7 rounded-xl bg-[#111] px-5 py-3 text-[13px] text-white">
-            {mode === "screen" ? "屏幕频闪运行中" : "后置手电筒运行中"} ·{" "}
-            {hz.toFixed(1)} Hz
-          </div>
           <button
             autoFocus
-            className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent] min-h-[88px] rounded-[20px] border-[3px] border-white bg-[#802823] px-10 py-4 text-[26px] font-bold text-white shadow-[0_0_0_3px_#000]"
+            className="absolute top-[max(12px,env(safe-area-inset-top))] right-[max(12px,env(safe-area-inset-right))] min-h-11 min-w-11 cursor-pointer rounded-full border border-white/30 bg-black/45 px-4 text-xs text-white/90 focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2"
             onClick={(e) => {
               e.stopPropagation();
               stop();
@@ -304,7 +274,6 @@ function App() {
           >
             ■ 立即停止
           </button>
-          <p className="mt-7 rounded-xl bg-[#111] px-5 py-3 text-[13px] leading-[1.8] text-white">轻触任意位置或按 Esc 停止</p>
         </div>
       )}
     </>
