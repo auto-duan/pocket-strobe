@@ -1,13 +1,12 @@
 # Verification — 2026-11-15 (Asia/Shanghai)
 
-- Initial git working tree clean; only this project changed.
-- Consent checkbox/state/gate/modal removed. Manual start only; default 1 Hz. Idle safety and reduced-motion text are nonblocking.
-- Running output: fixed inset-0, no padding, only one compact floating stop button (44px minimum touch target); main/settings/header/warnings hidden. Safe-area offsets apply only to stop button.
-- npm run typecheck, npm test (7/7), npm run build: passed. Controller and torch cleanup unchanged; cancellation, late streams, serialized writes and permission errors remain covered.
-- Chrome browser smoke passed: no consent or autoplay; default/preset; reduced-motion warning; viewport coverage and no horizontal/vertical active overflow at 320x568, 390x844, 1280x900; idle widths 320/360/390/700/701/1280; hidden settings/header/warnings; compact focused keyboard-accessible stop; Enter, button click, arbitrary background tap, Escape, pagehide, visibility hidden all stop. Zero page errors.
-- All automated starts force output black before interaction: no visible flashes. Screenshots: mobile-idle.png, desktop-idle.png, mobile-active-black.png.
-- Browser system fullscreen remains optional and best effort, not implied by viewport coverage.
+- Initial tree clean; only pocket-strobe changed.
+- Shared 0.1–999 Hz target, default 15; no slider; shared 12/15/20/24/30 presets. Exact drafts including 999.0 retained across modes.
+- Strict decimal validation rejects excess precision rather than rounding. Empty/trailing-decimal editing supported; invalid current draft blocks start, never falls back to stale values. Mobile decimal keyboard and labelled spinbutton min/max/step, keyboard arrow steps.
+- typecheck, build, 38 unit tests, git diff --check passed. High 999 Hz target stays unchanged, timer writes bounded to <=64/second in fake-time test; slow writes serialized without queued pulses; late permissions/cleanup and no future pulses after stop tested. Screen max one update/frame including 0.1,12.3,999.
+- Chrome smoke passed full input/preset/mode/start/invalid matrix at 390 and 1280px. Layout checked 320/360/390/700/701/1280; immersive output and compact focused stop at 320x568,390x844,1280x900. Escape, Enter, button, arbitrary tap, pagehide, hidden visibility stop. Zero page errors.
+- All automated starts force black output before interaction; no actual flashing. Idle and black active screenshots generated locally (ignored by git).
+- Actual frequency prominently unmeasured/not guaranteed; screen frame quantization/aliasing and LED serialized minimum 16ms scheduling disclosed, without changing target config.
 
-## Real-device checks not performed
-
-Rear LED/permissions on physical Android/iOS, measured pulse timing, heat/battery, actual mobile browser chrome/fullscreen, Wake Lock and OS suspension. Browser/hardware stalls can delay torch-off; no hardware guarantee implied by tests.
+## Not hardware-verified
+Physical Android/iOS LED/permissions, measured pulse timing, heat/battery, mobile browser chrome/fullscreen, Wake Lock, OS suspension. Hardware/driver stalls can delay off; 999 Hz is not a physical achievement claim.

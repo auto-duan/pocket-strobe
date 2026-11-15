@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clampFrequency, StrobeController } from "./controller";
+import { parseFrequency, StrobeController } from "./controller";
 const flush = async () => {
   for (let i = 0; i < 15; i++) await Promise.resolve();
 };
@@ -32,14 +32,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
-describe("safe frequency", () => {
-  it("clamps ranges and invalid values", () => {
-    expect(clampFrequency(100, "screen")).toBe(30);
-    expect(clampFrequency(10, "torch")).toBe(5);
-    expect(clampFrequency(-2, "screen")).toBe(0.5);
-    expect(clampFrequency(NaN, "screen")).toBe(1);
-    expect(clampFrequency(1.23, "screen")).toBe(1.2);
-  });
+describe("shared strict frequency", () => {
+  it.each(["0.1", "12.3", "999", "999.0", "12."])("accepts %s without rounding", draft => expect(parseFrequency(draft)).toBe(Number(draft)));
+  it.each(["", "0", "-1", "NaN", "Infinity", "1000", "0.01", "12.34", "1e2", ".1", " 12", "+12"])("rejects %s", draft => expect(parseFrequency(draft)).toBeNull());
 });
 it("never starts automatically; screen stop cancels all future pulses", async () => {
   const light = vi.fn();
@@ -110,7 +105,7 @@ it("serializes slow hardware writes and queues off before track release", async 
     mediaDevices: { getUserMedia: async () => h.stream },
   });
   const c = new StrobeController(vi.fn(), vi.fn());
-  await c.start("torch", 5);
+  await c.start("torch", 999);
   await flush();
   await vi.advanceTimersByTimeAsync(2000);
   expect(h.writes).toEqual([true]);
@@ -140,7 +135,7 @@ it("permission denial gives actionable message", async () => {
   expect(error).toHaveBeenCalledWith(expect.stringContaining("权限被拒绝"));
 });
 
-it.each([12, 15, 20, 24, 30])("samples %s Hz once per frame and drops missed frames", async (hz) => {
+it.each([0.1, 12.3, 12, 15, 20, 24, 30, 999])("samples %s Hz once per frame and drops missed frames", async (hz) => {
   const pending = new Map<number, FrameRequestCallback>();
   let id = 0;
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { pending.set(++id, cb); return id; });
@@ -165,4 +160,26 @@ it.each([12, 15, 20, 24, 30])("samples %s Hz once per frame and drops missed fra
   await c.stop();
   expect(pending.size).toBe(0);
   expect(light).toHaveBeenLastCalledWith(false);
+});
+
+it("999 Hz torch keeps target but bounds scheduling without backlog", async () => {
+ const h = hardware();
+ vi.stubGlobal("navigator", {mediaDevices:{getUserMedia:async()=>h.stream}});
+ const c = new StrobeController(vi.fn(), vi.fn());
+ expect(await c.start("torch",999)).toBe(true);
+ expect((c as any).frequency).toBe(999);
+ await vi.advanceTimersByTimeAsync(1000);
+ expect(h.writes.length).toBeGreaterThan(1);
+ expect(h.writes.length).toBeLessThanOrEqual(64);
+ await c.stop();
+ const count=h.writes.length;
+ await vi.advanceTimersByTimeAsync(1000);
+ expect(h.writes.length).toBe(count);
+ expect(vi.getTimerCount()).toBe(0);
+});
+it.each([0, -1, NaN, Infinity, 1000, 12.34])("controller rejects invalid %s instead of clamping", async value => {
+ const error=vi.fn(), light=vi.fn(); const c=new StrobeController(light,error);
+ expect(await c.start("screen",value)).toBe(false);
+ expect(error).toHaveBeenCalled();
+ expect(vi.getTimerCount()).toBe(0);
 });

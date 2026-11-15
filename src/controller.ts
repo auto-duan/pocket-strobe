@@ -1,9 +1,10 @@
 export type Mode = "screen" | "torch";
-export const clampFrequency = (value: number, mode: Mode) =>
-  Math.min(
-    mode === "torch" ? 5 : 30,
-    Math.max(0.5, Number.isFinite(value) ? Math.round(value * 10) / 10 : 1),
-  );
+export function parseFrequency(draft: string): number | null {
+  if (!/^\d+(?:\.\d?)?$/.test(draft)) return null;
+  const value = Number(draft);
+  return Number.isFinite(value) && value >= 0.1 && value <= 999 ? value : null;
+}
+export const validFrequency = (value: number) => Number.isFinite(value) && value >= 0.1 && value <= 999 && Math.abs(value * 10 - Math.round(value * 10)) < 1e-9;
 type TorchConstraint = MediaTrackConstraintSet & { torch: boolean };
 export class StrobeController {
   private generation = 0;
@@ -19,8 +20,9 @@ export class StrobeController {
     private light: (on: boolean) => void,
     private error: (message: string) => void,
   ) {}
-  setFrequency(value: number, mode: Mode) {
-    this.frequency = clampFrequency(value, mode);
+  setFrequency(value: number) {
+    if (!validFrequency(value)) throw new RangeError("频率须为 0.1–999 Hz，最多一位小数。");
+    this.frequency = value;
   }
   private write(track: MediaStreamTrack, on: boolean) {
     const operation = this.queue.then(() =>
@@ -57,8 +59,8 @@ export class StrobeController {
     await stopping;
     if (token !== this.generation) return false;
     this.mode = mode;
-    this.setFrequency(frequency, mode);
     try {
+      this.setFrequency(frequency);
       if (mode === "torch") {
         if (!window.isSecureContext)
           throw new Error("手电筒需要 HTTPS 安全连接（或本机 localhost）。");
@@ -138,7 +140,7 @@ export class StrobeController {
       if (!this.active || token !== this.generation) return;
       // Never catch up missed pulses; hardware writes are strictly serialized.
       const delay = Math.max(
-        0,
+        16, // Bounded writes; never busy-loop or catch up missed edges.
         500 / this.frequency - (performance.now() - began),
       );
       this.timer = setTimeout(() => void this.tick(token, !on), delay);

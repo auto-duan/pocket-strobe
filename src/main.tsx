@@ -1,16 +1,23 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { clampFrequency, StrobeController, type Mode } from "./controller";
+import { parseFrequency, StrobeController, type Mode } from "./controller";
 import "./style.css";
 function App() {
   const [mode, setMode] = useState<Mode>("screen"),
-    [hz, setHz] = useState(15),
+    [draft, setDraft] = useState("15"),
+    [frequencyError, setFrequencyError] = useState(""),
     [running, setRunning] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [full, setFull] = useState(false),
     [awake, setAwake] = useState(true),
     [note, setNote] = useState("");
+  const hz = parseFrequency(draft);
+  const validate = () => {
+    const value = parseFrequency(draft);
+    setFrequencyError(value === null ? "请输入 0.1–999 Hz 的普通数字，最多一位小数（不接受科学计数法）。" : "");
+    return value;
+  };
   const epoch = useRef(0),
     wake = useRef<WakeLockSentinel | null>(null),
     mounted = useRef(true);
@@ -60,6 +67,8 @@ function App() {
   }, []);
   const start = async () => {
     if (busy || running) return;
+    const value = validate();
+    if (value === null) return;
     const token = ++epoch.current;
     setBusy(true);
     setError("");
@@ -77,7 +86,7 @@ function App() {
           else wake.current = lock;
         })
         .catch(() => setNote("保持亮屏不可用，请留意系统自动锁屏。"));
-    const ok = await controller.current!.start(mode, hz);
+    const ok = await controller.current!.start(mode, value);
     if (token !== epoch.current || !mounted.current) return;
     setBusy(false);
     setRunning(ok);
@@ -88,11 +97,7 @@ function App() {
         void document.exitFullscreen().catch(() => {});
     }
   };
-  const frequency = (n: number) => {
-    const v = clampFrequency(n, mode);
-    setHz(v);
-    controller.current!.setFrequency(v, mode);
-  };
+  const frequency = (n: number) => { setDraft(String(n)); setFrequencyError(""); };
   return (
     <>
       <main hidden={running} className="mx-auto max-w-[1080px] pt-5 pr-[max(24px,env(safe-area-inset-right))] pb-6 pl-[max(24px,env(safe-area-inset-left))] min-[701px]:pt-8">
@@ -123,7 +128,6 @@ function App() {
                   className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent] flex flex-col items-start gap-2 rounded-2xl border border-[#3b4738] bg-[#202921] p-[18px] aria-pressed:border-[#c6ed96] aria-pressed:bg-[#2b3926] aria-pressed:shadow-[inset_0_0_0_1px_#c6ed96] [&>strong]:text-sm [&>small]:text-[11px] [&>small]:text-[#b1bda9]"
                   onClick={() => {
                     setMode(m);
-                    setHz(m === "screen" ? 15 : 5);
                     setError("");
                   }}
                 >
@@ -146,46 +150,23 @@ function App() {
               <h2>闪烁频率</h2>
               <span>02 / FREQUENCY</span>
             </div>
-            <div className="my-5 flex items-center justify-between [&_button]:w-12 [&_button]:rounded-full [&_button]:border [&_button]:border-[#43503d] [&_button]:bg-[#283127] [&_button]:text-2xl [&_output]:text-[62px] min-[701px]:[&_output]:text-[68px] [&_output]:font-[550] [&_output]:tracking-[-4px] [&_output]:tabular-nums [&_div>span]:ml-3 [&_div>span]:text-base [&_div>span]:text-[#a1b190]">
-              <button className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent]"
-                aria-label="降低频率"
-                disabled={busy || running}
-                onClick={() => frequency(hz - 0.5)}
-              >
-                −
-              </button>
-              <div>
-                <output>{hz.toFixed(1)}</output>
-                <span>Hz</span>
-              </div>
-              <button className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent]"
-                aria-label="增加频率"
-                disabled={busy || running}
-                onClick={() => frequency(hz + 0.5)}
-              >
-                +
-              </button>
-            </div>
-            <label className="sr-only" htmlFor="frequency">
-              闪烁频率（赫兹）
-            </label>
-            <input
-              id="frequency"
-              className="m-0 min-h-10 w-full accent-[#c5ed97] focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4"
-              type="range"
-              min="0.5"
-              max={mode === "screen" ? 30 : 5}
-              step="0.1"
-              value={hz}
-              disabled={busy || running}
-              onChange={(e) => frequency(Number(e.target.value))}
-            />
-            <div className="flex justify-between text-[10px] text-[#a1af9b]">
-              <span>0.5 Hz · 慢</span>
-              <span>{mode === "screen" ? 30 : 5} Hz · 快</span>
-            </div>
+            <label className="mt-5 block text-sm" htmlFor="frequency">目标闪烁频率（Hz）</label>
+            <input id="frequency" className="my-3 min-h-14 w-full min-w-0 rounded-xl border border-[#667655] bg-[#202921] px-4 text-3xl tabular-nums focus-visible:outline-3 focus-visible:outline-[#d1f897]"
+              type="text" role="spinbutton" inputMode="decimal" min="0.1" max="999" step="0.1"
+              aria-valuemin={0.1} aria-valuemax={999} aria-valuenow={hz ?? undefined}
+              aria-invalid={!!frequencyError} aria-describedby="frequency-help frequency-error"
+              value={draft} disabled={busy || running}
+              onChange={(e) => { setDraft(e.target.value); setFrequencyError(""); }} onBlur={validate}
+              onKeyDown={(e) => {
+                if ((e.key === "ArrowUp" || e.key === "ArrowDown") && hz !== null) {
+                  e.preventDefault();
+                  frequency(Math.min(999, Math.max(0.1, Math.round((hz + (e.key === "ArrowUp" ? 0.1 : -0.1)) * 10) / 10)));
+                }
+              }} />
+            <p id="frequency-help" className="text-xs text-[#b7c7a7]">两种光源共用 · 0.1–999 Hz · 最多一位小数</p>
+            <p id="frequency-error" role={frequencyError ? "alert" : undefined} className="mt-2 text-xs text-[#ffe0d0]">{frequencyError}</p>
             <div className="my-5 flex gap-1.5 [&>button]:flex-1 [&>button]:rounded-[10px] [&>button]:border [&>button]:border-[#3e4a37] [&>button]:bg-transparent [&>button]:text-xs [&>button[aria-pressed=true]]:border-[#c8ed99] [&>button[aria-pressed=true]]:bg-[#c8ed99] [&>button[aria-pressed=true]]:text-[#182210]">
-              {(mode === "screen" ? [12, 15, 20, 24, 30] : [0.5, 1, 2, 5]).map((n) => (
+              {[12, 15, 20, 24, 30].map((n) => (
                 <button className="min-h-12 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-3 focus-visible:outline-[#d1f897] focus-visible:outline-offset-4 [-webkit-tap-highlight-color:transparent]"
                   disabled={busy || running}
                   key={n}
@@ -197,9 +178,10 @@ function App() {
               ))}
             </div>
             <p className="mt-[11px] mb-0 border-t border-[#344032] pt-[18px] text-[11px] leading-[1.8] text-[#a9b6a3]">
-              目标每秒 {hz} 次闪光（Hz，不是显示 FPS）· 50% 目标占空比
+              目标每秒 {hz ?? "—"} 次闪光（Hz，不是显示 FPS）· 50% 目标占空比
               <br />
-              {mode === "screen" ? "未测量实际频率。60 Hz 屏幕理想交替上限 30 Hz；亮暗至少各一帧，20 / 24 Hz 等会量化、混叠，不能保证精确定格。短脉冲定格建议使用专用频闪灯。" : "LED 仅提供 0.5–5 Hz 实验性慢闪，不适合 15–30 Hz 定格。切换模式重设屏幕为 15 Hz、LED 为 5 Hz；高频效果请选屏幕或专用频闪灯。"}
+              <strong>实际频率未测量，不能保证达到目标（包括 999 Hz）。</strong>
+              {mode === "screen" ? "屏幕每帧最多更新一次；60 Hz 屏幕理想交替上限 30 Hz，高目标会量化、混叠。" : "LED 受硬件与浏览器限制；串行写入、至少间隔 16 ms，跳过错失脉冲，不追赶。"} 切换光源不改变目标。
             </p>
           </section>
           <aside>
